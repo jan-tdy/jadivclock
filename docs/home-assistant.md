@@ -47,6 +47,12 @@ automation:
     triggers:
       - trigger: event
         event_type: mobile_app_notification_action
+        event_data:
+          action: PANEL_YES
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: PANEL_NO
     actions:
       - action: input_text.set_value
         target: {entity_id: input_text.kitchen_panel_answer}
@@ -60,6 +66,14 @@ Contract with the sending panel:
 2. Set the answer entity to the real answer when it is known. The sender shows
    it and beeps twice.
 
-Then set `bc_target_*` in the sending panel's substitutions to those entities
-(an `input_text` helper is a valid target, because the panel uses
-`text.set_value`).
+Then set `bc_target_*` in the sending panel's substitutions to those entities.
+Because they are `input_text` helpers, also set `bc_question_domain: input_text`
+(the default, `text`, is for `text` entities such as another JadivClock's
+broadcast entity). Create the helpers with a maximum length of 120 characters,
+the length of the on-screen composer:
+
+```yaml
+input_text:
+  kitchen_panel_question: {name: Kitchen panel question, max: 120}
+  kitchen_panel_answer: {name: Kitchen panel answer, max: 120}
+```

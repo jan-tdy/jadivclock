@@ -33,13 +33,23 @@ esphome:
     # Fallback off the boot screen if Wi-Fi never connects; wifi.on_connect
     # normally gets there sooner.
     - delay: 10s
-    - script.execute: goto_home
+    - if:
+        condition:
+          lvgl.page.is_showing: boot_page
+        then:
+          - script.execute: goto_home
 
 wifi:
   on_connect:
     then:
       - lvgl.widget.hide: lbl_no_wifi
-      - script.execute: goto_home
+      # Only leave the boot screen: a Wi-Fi reconnect must not pull the user
+      # away from the page they are on.
+      - if:
+          condition:
+            lvgl.page.is_showing: boot_page
+          then:
+            - script.execute: goto_home
   on_disconnect:
     then:
       - lvgl.widget.show: lbl_no_wifi
@@ -121,9 +131,14 @@ interval:
     then:
       - if:
           condition:
-            lambda: |-
-              return id(ui_mode) == "dashboard" &&
-                     lv_display_get_inactive_time(lv_display_get_default()) >= 20000;
+            and:
+              # Idle time only resets on touch, so without this the condition
+              # stays true and the home page would be redrawn every 5s.
+              - not:
+                  lvgl.page.is_showing: home_page
+              - lambda: |-
+                  return id(ui_mode) == "dashboard" &&
+                         lv_display_get_inactive_time(lv_display_get_default()) >= 20000;
           then:
             - script.execute: goto_home
 

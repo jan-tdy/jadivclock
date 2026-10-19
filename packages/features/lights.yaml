@@ -112,24 +112,37 @@ script:
           id: sw_light_1
           state:
             checked: !lambda 'return id(light_1_state).state;'
-      - globals.set: {id: sync_sl_1, value: 'true'}
-      - lvgl.slider.update:
-          id: sl_light_1
-          value: !lambda |-
-            return id(light_1_brightness).has_state()
-              ? (int) (id(light_1_brightness).state / 255.0f * 100.0f) : 0;
-          indicator:
-            bg_color: !lambda |-
-              return id(light_1_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
-      - globals.set: {id: sync_temp_1, value: 'true'}
-      - lvgl.slider.update:
-          id: sl_temp_1
-          value: !lambda |-
-            return id(light_1_kelvin).has_state()
-              ? (int) id(light_1_kelvin).state : 3000;
-          indicator:
-            bg_color: !lambda |-
-              return id(light_1_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
+      # Sliders are left alone while a finger is on them, so a periodic or
+      # event-driven resync cannot move a slider mid-drag.
+      - if:
+          condition:
+            lambda: 'return !lv_obj_has_state(id(sl_light_1), LV_STATE_PRESSED);'
+          then:
+            - globals.set: {id: sync_sl_1, value: 'true'}
+            - lvgl.slider.update:
+                id: sl_light_1
+                value: !lambda |-
+                  // HA drops the attribute while the light is off: NaN, not a number.
+                  float v = id(light_1_brightness).state;
+                  return (id(light_1_brightness).has_state() && !std::isnan(v))
+                    ? (int) (v / 255.0f * 100.0f) : 0;
+                indicator:
+                  bg_color: !lambda |-
+                    return id(light_1_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
+      - if:
+          condition:
+            lambda: 'return !lv_obj_has_state(id(sl_temp_1), LV_STATE_PRESSED);'
+          then:
+            - globals.set: {id: sync_temp_1, value: 'true'}
+            - lvgl.slider.update:
+                id: sl_temp_1
+                value: !lambda |-
+                  float k = id(light_1_kelvin).state;
+                  return (id(light_1_kelvin).has_state() && !std::isnan(k))
+                    ? (int) k : 3000;
+                indicator:
+                  bg_color: !lambda |-
+                    return id(light_1_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
       - delay: 500ms
       - globals.set: {id: sync_sw_1, value: 'false'}
       - globals.set: {id: sync_sl_1, value: 'false'}
@@ -142,24 +155,37 @@ script:
           id: sw_light_2
           state:
             checked: !lambda 'return id(light_2_state).state;'
-      - globals.set: {id: sync_sl_2, value: 'true'}
-      - lvgl.slider.update:
-          id: sl_light_2
-          value: !lambda |-
-            return id(light_2_brightness).has_state()
-              ? (int) (id(light_2_brightness).state / 255.0f * 100.0f) : 0;
-          indicator:
-            bg_color: !lambda |-
-              return id(light_2_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
-      - globals.set: {id: sync_temp_2, value: 'true'}
-      - lvgl.slider.update:
-          id: sl_temp_2
-          value: !lambda |-
-            return id(light_2_kelvin).has_state()
-              ? (int) id(light_2_kelvin).state : 3000;
-          indicator:
-            bg_color: !lambda |-
-              return id(light_2_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
+      # Sliders are left alone while a finger is on them, so a periodic or
+      # event-driven resync cannot move a slider mid-drag.
+      - if:
+          condition:
+            lambda: 'return !lv_obj_has_state(id(sl_light_2), LV_STATE_PRESSED);'
+          then:
+            - globals.set: {id: sync_sl_2, value: 'true'}
+            - lvgl.slider.update:
+                id: sl_light_2
+                value: !lambda |-
+                  // HA drops the attribute while the light is off: NaN, not a number.
+                  float v = id(light_2_brightness).state;
+                  return (id(light_2_brightness).has_state() && !std::isnan(v))
+                    ? (int) (v / 255.0f * 100.0f) : 0;
+                indicator:
+                  bg_color: !lambda |-
+                    return id(light_2_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
+      - if:
+          condition:
+            lambda: 'return !lv_obj_has_state(id(sl_temp_2), LV_STATE_PRESSED);'
+          then:
+            - globals.set: {id: sync_temp_2, value: 'true'}
+            - lvgl.slider.update:
+                id: sl_temp_2
+                value: !lambda |-
+                  float k = id(light_2_kelvin).state;
+                  return (id(light_2_kelvin).has_state() && !std::isnan(k))
+                    ? (int) k : 3000;
+                indicator:
+                  bg_color: !lambda |-
+                    return id(light_2_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
       - delay: 500ms
       - globals.set: {id: sync_sw_2, value: 'false'}
       - globals.set: {id: sync_sl_2, value: 'false'}

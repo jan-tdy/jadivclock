@@ -14,6 +14,12 @@
 #   bc_target_broadcast_entity      text entity the broadcast is written to
 #   bc_target_question_entity       text entity the question is written to
 #   bc_target_answer_entity         text entity the answer is read from
+#   bc_broadcast_domain / bc_question_domain
+#                                   `text` (default, e.g. another panel's
+#                                   broadcast entity) or `input_text` (a Home
+#                                   Assistant helper). `text.set_value` only
+#                                   accepts `text` entities and
+#                                   `input_text.set_value` only helpers.
 #
 # The on-screen keyboard is ASCII only.
 #
@@ -23,6 +29,8 @@ substitutions:
   bc_target_broadcast_entity: text.remote_panel_broadcast
   bc_target_question_entity: text.remote_panel_question
   bc_target_answer_entity: text.remote_panel_question_answer
+  bc_broadcast_domain: text
+  bc_question_domain: text
 
 globals:
   # "broadcast" or "question", set by the mode picker.
@@ -71,7 +79,9 @@ text_sensor:
                     - script.execute: bc_hide_answer_delayed
 
 script:
-  # Sends only a non-empty text, then always clears the composer and goes home.
+  # Sends only a non-empty text. The composer is cleared and the panel goes home
+  # only once Home Assistant accepted the action (on_success); on a rejection
+  # the typed text is kept and the failure is shown.
   - id: bc_send
     then:
       - if:
@@ -83,24 +93,42 @@ script:
                   lambda: 'return id(bc_mode) == std::string("question");'
                 then:
                   - homeassistant.action:
-                      action: text.set_value
+                      action: ${bc_question_domain}.set_value
                       data:
                         entity_id: ${bc_target_question_entity}
                         value: !lambda 'return id(bc_typed_text);'
-                  - globals.set: {id: bc_awaiting_answer, value: 'true'}
-                  - lvgl.label.update: {id: lbl_bc_answer, text: "Question sent.\nWaiting for the answer..."}
-                  - lvgl.widget.show: bc_answer_scrim
-                  - lvgl.widget.show: bc_answer_dlg
-                  - script.execute: bc_answer_timeout
+                      on_success:
+                        - globals.set: {id: bc_awaiting_answer, value: 'true'}
+                        - lvgl.label.update: {id: lbl_bc_answer, text: "Question sent.\nWaiting for the answer..."}
+                        - lvgl.widget.show: bc_answer_scrim
+                        - lvgl.widget.show: bc_answer_dlg
+                        - script.execute: bc_answer_timeout
+                        - script.execute: bc_finish_send
+                      on_error:
+                        - script.execute: bc_send_failed
                 else:
                   - homeassistant.action:
-                      action: text.set_value
+                      action: ${bc_broadcast_domain}.set_value
                       data:
                         entity_id: ${bc_target_broadcast_entity}
                         value: !lambda 'return id(bc_typed_text);'
+                      on_success:
+                        - script.execute: bc_finish_send
+                      on_error:
+                        - script.execute: bc_send_failed
+          else:
+            - script.execute: bc_finish_send
+
+  - id: bc_finish_send
+    then:
       - lvgl.textarea.update: {id: ta_bc, text: ""}
       - globals.set: {id: bc_typed_text, value: '""'}
       - script.execute: goto_home
+
+  - id: bc_send_failed
+    then:
+      - lvgl.label.update: {id: lbl_bc_dest, text: "Send failed - check Home Assistant"}
+      - script.execute: {id: beep, count: 1}
 
   # 60s backstop for the answer. Armed at send, restarted whenever the answer
   # entity goes "waiting". If it fires while still waiting, give up.

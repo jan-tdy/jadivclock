@@ -12,5 +12,9 @@
 | `bc_target_broadcast_entity` | `text.remote_panel_broadcast` |
 | `bc_target_question_entity` | `text.remote_panel_question` |
 | `bc_target_answer_entity` | `text.remote_panel_question_answer` |
+| `bc_broadcast_domain`, `bc_question_domain` | `text` (use `input_text` for helpers) |
 
 The keyboard is ASCII only.
+
+If Home Assistant rejects the message, the text stays in the composer and an
+error is shown; the composer is only cleared once the action was accepted.

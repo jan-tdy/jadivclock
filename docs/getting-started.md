@@ -15,7 +15,8 @@ and (optionally) Home Assistant.
    ```
 
 2. Copy [examples/full.yaml](../examples/full.yaml) or
-   [examples/minimal.yaml](../examples/minimal.yaml) next to it and edit the
+   [examples/minimal.yaml](../examples/minimal.yaml) next to it, save it as
+   `my-clock.yaml` (any name works; use it in the commands below) and edit the
    substitutions. Remove the packages you do not want.
 3. Connect the panel over USB-C and flash it:
 
@@ -43,6 +44,7 @@ Common ones:
 | `name` / `friendly_name` | `jadivclock` / `JadivClock` | device name |
 | `timezone` | `UTC` | IANA time zone, e.g. `Europe/Berlin` |
 | `user_name` | empty | greeting on the home screen |
+| `http_verify_ssl` | `true` | TLS certificate check for Todoist / Open-Meteo; set `"false"` only to debug |
 | `ui_default_mode` | `dashboard` | first-boot orientation (`dashboard` or `phone`) |
 | `font_extra_glyphs` | empty | extra characters (accents) for the fonts |
 

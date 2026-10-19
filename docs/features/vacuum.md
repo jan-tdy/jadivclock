@@ -13,4 +13,5 @@ for a Home Assistant `vacuum` entity.
 
 Status, room, battery and progress come from separate sensor entities whose
 names depend on your vacuum integration; missing ones show `--`. The
-pause/resume button follows the vacuum entity's own state.
+button shows *PAUSE* while the vacuum is cleaning and *START* in every other
+state (docked, paused, idle, ...).

@@ -7,6 +7,9 @@ substitutions:
   friendly_name: JadivClock
   # IANA time zone name, e.g. Europe/Berlin, America/New_York.
   timezone: UTC
+  # TLS certificate verification for Todoist / Open-Meteo requests. Keep true
+  # (the API token is sent over these connections); only set false to debug.
+  http_verify_ssl: "true"
   # Name shown in the greeting on the home screen ("Hello <user_name>").
   user_name: ""
   log_level: INFO
@@ -42,7 +45,7 @@ wifi:
 http_request:
   useragent: esphome/jadivclock
   timeout: 10s
-  verify_ssl: false
+  verify_ssl: ${http_verify_ssl}
 
 json:
 

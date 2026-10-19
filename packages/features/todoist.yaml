@@ -8,6 +8,11 @@
 # Requires: core.yaml, ui/base.yaml
 substitutions:
   todoist_token: !secret todoist_token
+  # URL-encoded Todoist filter term combined with "(today | overdue)". The
+  # default, "!assigned to: others", shows your own and unassigned tasks (right
+  # for personal projects). In a shared workspace where you only want tasks
+  # assigned to you, use "assigned to: me", i.e. assigned%20to%3A%20me.
+  todoist_assignee_filter: "%21assigned%20to%3A%20others"
 
 globals:
   # One slot per visible row: text, Todoist task id, recurring flag, and whether
@@ -84,12 +89,12 @@ globals:
   - id: todo_iscal_6
     type: bool
     initial_value: 'false'
-  # Runtime-selectable Todoist filter query (URL-encoded). "me" is resolved by
-  # Todoist from the API token itself. A plain "today" would drop a timed task
-  # the moment its due time passes, so the default combines it with overdue.
+  # Runtime-selectable Todoist filter query (URL-encoded). A plain "today" would
+  # drop a timed task the moment its due time passes, so the default combines it
+  # with overdue.
   - id: todo_filter
     type: std::string
-    initial_value: '"%28today%20%7C%20overdue%29%20%26%20assigned%20to%3A%20me"'
+    initial_value: '"%28today%20%7C%20overdue%29%20%26%20${todoist_assignee_filter}"'
   # Next calendar event, written by todoist_calendar.yaml when it is included.
   - id: todo_cal_message
     type: std::string
@@ -120,6 +125,13 @@ script:
             then:
               - lambda: |-
                   ESP_LOGD("todo", "status=%d len=%d", response->status_code, (int) body.size());
+                  // Keep the current rows on an HTTP error (revoked token,
+                  // outage) or an unparsable/truncated body, instead of
+                  // replacing the agenda with empty slots.
+                  if (response->status_code < 200 || response->status_code >= 300) {
+                    ESP_LOGW("todo", "Todoist fetch failed: HTTP %d", response->status_code);
+                    return;
+                  }
                   // Todoist priority is inverted from the UI: API 4 = UI "P1".
                   struct TaskInfo {
                     std::string sort_key;
@@ -133,8 +145,12 @@ script:
                   std::vector<TaskInfo> timed_tasks;
                   std::vector<TaskInfo> allday_tasks;
                   auto doc = json::parse_json(body);
+                  if (doc.isNull()) {
+                    ESP_LOGW("todo", "Todoist response could not be parsed");
+                    return;
+                  }
                   JsonArray results = doc["results"];
-                  if (!doc.isNull() && !results.isNull()) {
+                  if (!results.isNull()) {
                     for (JsonObject t : results) {
                       JsonObject due = t["due"];
                       if (due.isNull()) continue;
@@ -233,7 +249,16 @@ script:
                   std::string cal_msg = id(todo_cal_message);
                   std::string cal_start = id(todo_cal_start);
                   std::string cal_allday = id(todo_cal_allday);
-                  if (!cal_msg.empty() && cal_start.size() >= 19) {
+                  // Only today's (or an already running) event: HA's "next event"
+                  // can be days away, and the row would look like it is today.
+                  // Not shown in the Overdue view either.
+                  auto now_t = id(sntp_time).now();
+                  char today[11] = "";
+                  if (now_t.is_valid())
+                    snprintf(today, sizeof(today), "%04d-%02d-%02d", now_t.year, now_t.month, now_t.day_of_month);
+                  bool overdue_view = id(todo_filter).rfind("overdue", 0) == 0;
+                  if (!cal_msg.empty() && cal_start.size() >= 19 && today[0] != '\0' &&
+                      cal_start.compare(0, 10, today) <= 0 && !overdue_view) {
                     // HA formats start_time as "YYYY-MM-DD HH:MM:SS" (local).
                     // Swap the space for 'T' to compare against Todoist's keys.
                     std::string sort_key = cal_start;
@@ -364,7 +389,7 @@ script:
     then:
       - if:
           condition:
-            lambda: 'return !task_id.empty();'
+            lambda: 'return !task_id.empty() && id(sntp_time).now().is_valid();'
           then:
             - lvgl.widget.show: loading_dialog
             - script.execute: hide_loading_delayed
@@ -445,8 +470,8 @@ lvgl:
               then:
                 - lambda: |-
                     id(todo_filter) = (x == 1)
-                      ? "overdue%20%26%20assigned%20to%3A%20me"
-                      : "%28today%20%7C%20overdue%29%20%26%20assigned%20to%3A%20me";
+                      ? "overdue%20%26%20${todoist_assignee_filter}"
+                      : "%28today%20%7C%20overdue%29%20%26%20${todoist_assignee_filter}";
                 - script.execute: fetch_todos
         - obj:
             id: todo_list_container

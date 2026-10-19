@@ -41,11 +41,12 @@ sensor:
     internal: true
     on_value:
       then:
-        - lambda: 'id(home_outdoor_temp) = x;'
+        - lambda: 'id(home_outdoor_temp) = std::isnan(x) ? -999.0f : x;'
         - script.execute: update_home_status
         - lvgl.label.update:
             id: lbl_thermo_1_temp
             text: !lambda |-
+              if (std::isnan(x)) return std::string("--°C");
               char b[16];
               snprintf(b, sizeof(b), "%.1f°C", x);
               return std::string(b);
@@ -53,6 +54,8 @@ sensor:
         # first read would otherwise mutate trend_ref_1 before a second
         # independent template saw it.
         - lambda: |-
+            // "unavailable"/"unknown" arrive as NaN: no arrow update for them.
+            if (std::isnan(x)) return;
             std::string arrow = "-";
             uint32_t color = 0xFFFFFF;
             if (id(trend_ref_1) > -900.0f) {
@@ -72,6 +75,7 @@ sensor:
         - lvgl.label.update:
             id: lbl_thermo_1_humid
             text: !lambda |-
+              if (std::isnan(x)) return std::string("--% humidity");
               char b[24];
               snprintf(b, sizeof(b), "%.0f%% humidity", x);
               return std::string(b);
@@ -84,6 +88,7 @@ sensor:
         - lvgl.label.update:
             id: lbl_thermo_2_temp
             text: !lambda |-
+              if (std::isnan(x)) return std::string("--°C");
               char b[16];
               snprintf(b, sizeof(b), "%.1f°C", x);
               return std::string(b);
@@ -91,6 +96,8 @@ sensor:
         # first read would otherwise mutate trend_ref_2 before a second
         # independent template saw it.
         - lambda: |-
+            // "unavailable"/"unknown" arrive as NaN: no arrow update for them.
+            if (std::isnan(x)) return;
             std::string arrow = "-";
             uint32_t color = 0xFFFFFF;
             if (id(trend_ref_2) > -900.0f) {
@@ -110,6 +117,7 @@ sensor:
         - lvgl.label.update:
             id: lbl_thermo_2_humid
             text: !lambda |-
+              if (std::isnan(x)) return std::string("--% humidity");
               char b[24];
               snprintf(b, sizeof(b), "%.0f%% humidity", x);
               return std::string(b);
@@ -122,6 +130,7 @@ sensor:
         - lvgl.label.update:
             id: lbl_thermo_3_temp
             text: !lambda |-
+              if (std::isnan(x)) return std::string("--°C");
               char b[16];
               snprintf(b, sizeof(b), "%.1f°C", x);
               return std::string(b);
@@ -129,6 +138,8 @@ sensor:
         # first read would otherwise mutate trend_ref_3 before a second
         # independent template saw it.
         - lambda: |-
+            // "unavailable"/"unknown" arrive as NaN: no arrow update for them.
+            if (std::isnan(x)) return;
             std::string arrow = "-";
             uint32_t color = 0xFFFFFF;
             if (id(trend_ref_3) > -900.0f) {
@@ -148,19 +159,21 @@ sensor:
         - lvgl.label.update:
             id: lbl_thermo_3_humid
             text: !lambda |-
+              if (std::isnan(x)) return std::string("--% humidity");
               char b[24];
               snprintf(b, sizeof(b), "%.0f%% humidity", x);
               return std::string(b);
 
 interval:
-  # Roll the trend references forward so the arrow means "vs. about an hour
-  # ago" rather than freezing at the first reading after boot.
+  # Roll the trend references forward each hour, so the arrow compares to a
+  # reference that is at most an hour old rather than freezing at the first
+  # reading after boot.
   - interval: 3600s
     then:
       - lambda: |-
-          if (id(temp_1).has_state()) id(trend_ref_1) = id(temp_1).state;
-          if (id(temp_2).has_state()) id(trend_ref_2) = id(temp_2).state;
-          if (id(temp_3).has_state()) id(trend_ref_3) = id(temp_3).state;
+          if (id(temp_1).has_state() && !std::isnan(id(temp_1).state)) id(trend_ref_1) = id(temp_1).state;
+          if (id(temp_2).has_state() && !std::isnan(id(temp_2).state)) id(trend_ref_2) = id(temp_2).state;
+          if (id(temp_3).has_state() && !std::isnan(id(temp_3).state)) id(trend_ref_3) = id(temp_3).state;
 
 script:
   # Repaint from the values ESPHome already has cached (see ui/base.yaml).
@@ -169,42 +182,42 @@ script:
       - lvgl.label.update:
           id: lbl_thermo_1_temp
           text: !lambda |-
-            if (!id(temp_1).has_state()) return std::string("--°C");
+            if (!id(temp_1).has_state() || std::isnan(id(temp_1).state)) return std::string("--°C");
             char b[16];
             snprintf(b, sizeof(b), "%.1f°C", id(temp_1).state);
             return std::string(b);
       - lvgl.label.update:
           id: lbl_thermo_1_humid
           text: !lambda |-
-            if (!id(humid_1).has_state()) return std::string("--% humidity");
+            if (!id(humid_1).has_state() || std::isnan(id(humid_1).state)) return std::string("--% humidity");
             char b[24];
             snprintf(b, sizeof(b), "%.0f%% humidity", id(humid_1).state);
             return std::string(b);
       - lvgl.label.update:
           id: lbl_thermo_2_temp
           text: !lambda |-
-            if (!id(temp_2).has_state()) return std::string("--°C");
+            if (!id(temp_2).has_state() || std::isnan(id(temp_2).state)) return std::string("--°C");
             char b[16];
             snprintf(b, sizeof(b), "%.1f°C", id(temp_2).state);
             return std::string(b);
       - lvgl.label.update:
           id: lbl_thermo_2_humid
           text: !lambda |-
-            if (!id(humid_2).has_state()) return std::string("--% humidity");
+            if (!id(humid_2).has_state() || std::isnan(id(humid_2).state)) return std::string("--% humidity");
             char b[24];
             snprintf(b, sizeof(b), "%.0f%% humidity", id(humid_2).state);
             return std::string(b);
       - lvgl.label.update:
           id: lbl_thermo_3_temp
           text: !lambda |-
-            if (!id(temp_3).has_state()) return std::string("--°C");
+            if (!id(temp_3).has_state() || std::isnan(id(temp_3).state)) return std::string("--°C");
             char b[16];
             snprintf(b, sizeof(b), "%.1f°C", id(temp_3).state);
             return std::string(b);
       - lvgl.label.update:
           id: lbl_thermo_3_humid
           text: !lambda |-
-            if (!id(humid_3).has_state()) return std::string("--% humidity");
+            if (!id(humid_3).has_state() || std::isnan(id(humid_3).state)) return std::string("--% humidity");
             char b[24];
             snprintf(b, sizeof(b), "%.0f%% humidity", id(humid_3).state);
             return std::string(b);

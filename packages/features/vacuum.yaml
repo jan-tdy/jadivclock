@@ -23,6 +23,7 @@ sensor:
         - lvgl.label.update:
             id: lbl_vac_battery
             text: !lambda |-
+              if (std::isnan(x)) return std::string("Battery: --%");
               char b[24];
               snprintf(b, sizeof(b), "Battery: %.0f%%", x);
               return std::string(b);
@@ -35,6 +36,7 @@ sensor:
         - lvgl.label.update:
             id: lbl_vac_progress
             text: !lambda |-
+              if (std::isnan(x)) return std::string("Progress: --%");
               char b[24];
               snprintf(b, sizeof(b), "Progress: %.0f%%", x);
               return std::string(b);
@@ -54,9 +56,9 @@ text_sensor:
     on_value:
       then:
         - lvgl.label.update: {id: lbl_vac_room, text: !lambda 'return x;'}
-  # The vacuum entity's own raw state ("cleaning" / "paused" / "docked"): the
-  # pause/resume button reads it to decide which action to send and how to
-  # label itself.
+  # The vacuum entity's own raw state ("cleaning" / "paused" / "docked" /
+  # "returning" ...): the button pauses while cleaning and starts/resumes in
+  # every other state.
   - platform: homeassistant
     id: vac_state
     entity_id: ${vacuum_entity}
@@ -65,7 +67,7 @@ text_sensor:
       then:
         - lvgl.label.update:
             id: lbl_vac_toggle
-            text: !lambda 'return (x == "paused") ? std::string("RESUME") : std::string("PAUSE");'
+            text: !lambda 'return (x == "cleaning") ? std::string("PAUSE") : std::string("START");'
 
 lvgl:
   pages:
@@ -100,11 +102,11 @@ lvgl:
             bg_color: 0x2C3345
             radius: 8
             widgets:
-              - label: {id: lbl_vac_toggle, align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "PAUSE"}
+              - label: {id: lbl_vac_toggle, align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "START"}
             on_click:
               - if:
                   condition:
-                    lambda: 'return id(vac_state).state == "paused";'
+                    lambda: 'return id(vac_state).state != "cleaning";'
                   then:
                     - homeassistant.action:
                         action: vacuum.start
