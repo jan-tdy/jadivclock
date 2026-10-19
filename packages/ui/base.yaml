@@ -1,0 +1,496 @@
+# JadivClock base UI: fonts, boot screen, home screen, settings, wifi indicator
+# and the shared loading dialog.
+#
+# Feature packages extend this one:
+#   - they add a tile to the home screen with
+#       lvgl: pages: - id: !extend home_page, widgets: [<tile>]
+#     (the home screen is a wrapping flex container, so tiles reflow between
+#     landscape and portrait and any combination of features fits)
+#   - links to a page live in the package that owns the page
+#   - dialogs go to lvgl: top_layer: widgets:
+#
+# Requires: core.yaml and a hw/ package.
+substitutions:
+  # "dashboard" = landscape 480x320, "phone" = portrait 320x480. Only the
+  # first-boot default: the last used mode is restored from flash afterwards.
+  ui_default_mode: dashboard
+  # Roboto glyph lists REPLACE the default set, so this must contain full ASCII.
+  # Add accented characters your Todoist tasks or messages use with
+  # font_extra_glyphs, e.g. "áäčďéíľňóôšťúýž".
+  font_extra_glyphs: ""
+  font_glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°·${font_extra_glyphs}"
+
+esphome:
+  on_boot:
+    # ui_mode is restored from flash. Apply its rotation before the first
+    # frame so a panel left in dashboard mode does not flash portrait first.
+    - if:
+        condition:
+          lambda: 'return id(ui_mode) == "dashboard";'
+        then:
+          - lvgl.display.set_rotation: 270
+    - script.execute: update_home_status
+    # Fallback off the boot screen if Wi-Fi never connects; wifi.on_connect
+    # normally gets there sooner.
+    - delay: 10s
+    - script.execute: goto_home
+
+wifi:
+  on_connect:
+    then:
+      - lvgl.widget.hide: lbl_no_wifi
+      - script.execute: goto_home
+  on_disconnect:
+    then:
+      - lvgl.widget.show: lbl_no_wifi
+
+globals:
+  # "phone" or "dashboard": the mode the panel was last left in.
+  - id: ui_mode
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 16
+    initial_value: '"${ui_default_mode}"'
+  # Outdoor temperature for the greeting line; a thermometer feature may set it.
+  # -999 is an "unknown" sentinel.
+  - id: home_outdoor_temp
+    type: float
+    initial_value: '-999.0f'
+
+font:
+  - file: "gfonts://Roboto"
+    id: f_big
+    size: 64
+    glyphs: "0123456789:-"
+  - file: "gfonts://Roboto"
+    id: f_med
+    size: 20
+    glyphs: ${font_glyphs}
+  - file: "gfonts://Roboto"
+    id: f_small
+    size: 14
+    glyphs: ${font_glyphs}
+  - file: "gfonts://Roboto"
+    id: f_status
+    size: 26
+    glyphs: ${font_glyphs}
+  # Incoming-message popup scales short texts up for readability.
+  - file: "gfonts://Roboto"
+    id: f_broadcast_big
+    size: 40
+    glyphs: ${font_glyphs}
+
+interval:
+  - interval: 1s
+    then:
+      - lvgl.label.update:
+          id: lbl_home_time
+          text: !lambda |-
+            auto t = id(sntp_time).now();
+            if (!t.is_valid()) return std::string("--:--");
+            char b[6];
+            snprintf(b, sizeof(b), "%02d:%02d", t.hour, t.minute);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_home_date
+          text: !lambda |-
+            auto t = id(sntp_time).now();
+            if (!t.is_valid()) return std::string("");
+            const char* days[] = {"", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+            char b[40];
+            snprintf(b, sizeof(b), "%s %04d-%02d-%02d", days[t.day_of_week], t.year, t.month, t.day_of_month);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_cpu
+          text: !lambda |-
+            char b[24];
+            snprintf(b, sizeof(b), "CPU: %.1f C", id(esp_temp).state);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_wifi
+          text: !lambda |-
+            char b[48];
+            snprintf(b, sizeof(b), "WiFi: %.0f dBm  %s", id(wifi_rssi).state, id(wifi_ip).state.c_str());
+            return std::string(b);
+
+  # Auto-return to the home screen after 20s without touch, dashboard mode
+  # only (portrait/phone mode stays wherever it was left).
+  # lv_display_get_inactive_time resets only on real touch events, so the 1s
+  # clock redraw above cannot keep this from firing.
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(ui_mode) == "dashboard" &&
+                     lv_display_get_inactive_time(lv_display_get_default()) >= 20000;
+          then:
+            - script.execute: goto_home
+
+script:
+  # Greeting line on the home screen: "Hello <user_name> · 12°C outside".
+  - id: update_home_status
+    mode: restart
+    then:
+      - lvgl.label.update:
+          id: lbl_home_status
+          text: !lambda |-
+            std::string s = "Hello";
+            std::string user = "${user_name}";
+            if (!user.empty()) s += " " + user;
+            if (id(home_outdoor_temp) > -900.0f) {
+              char b[24];
+              snprintf(b, sizeof(b), " · %.0f°C outside", id(home_outdoor_temp));
+              s += b;
+            }
+            return s;
+
+  # Shows the home page and applies the rotation of the current ui_mode. The
+  # one place that decides which page is "home".
+  - id: goto_home
+    then:
+      - if:
+          condition:
+            lambda: 'return id(ui_mode) == "dashboard";'
+          then:
+            - lvgl.display.set_rotation: 270
+          else:
+            - lvgl.display.set_rotation: 0
+      - lvgl.page.show: home_page
+
+  # Switches between landscape ("dashboard") and portrait ("phone"); the choice
+  # is persisted across reboots.
+  - id: set_ui_mode
+    parameters:
+      mode: std::string
+    then:
+      - globals.set:
+          id: ui_mode
+          value: !lambda 'return mode;'
+      - script.execute: goto_home
+
+  # Safety net: the normal path hides loading_dialog as soon as a request
+  # finishes; this covers a request that never reaches on_response/on_error.
+  - id: hide_loading_delayed
+    mode: restart
+    then:
+      - delay: 12s
+      - lvgl.widget.hide: loading_dialog
+
+  # "Refresh" button on the settings page. Feature packages extend this script
+  # (`- id: !extend refresh_ha_display`) to repaint their widgets from the
+  # values ESPHome already has cached from Home Assistant.
+  - id: refresh_ha_display
+    then:
+      - logger.log: "Refreshing widgets"
+
+lvgl:
+  pages:
+    # Shown at power-on while Wi-Fi connects. The colour strip doubles as a
+    # display colour-order self-test.
+    - id: boot_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        - label:
+            align: TOP_MID
+            y: 20
+            text_font: f_med
+            text_color: 0xFFFFFF
+            text: "JadivClock"
+        - obj:
+            align: TOP_MID
+            y: 70
+            width: 300
+            height: 40
+            bg_color: 0x11131A
+            border_width: 0
+            scrollable: false
+            widgets:
+              - obj: {align: TOP_LEFT, x: 0, y: 0, width: 44, height: 40, bg_color: 0xFF0000, radius: 4}
+              - obj: {align: TOP_LEFT, x: 52, y: 0, width: 44, height: 40, bg_color: 0x00FF00, radius: 4}
+              - obj: {align: TOP_LEFT, x: 104, y: 0, width: 44, height: 40, bg_color: 0x0000FF, radius: 4}
+              - obj: {align: TOP_LEFT, x: 156, y: 0, width: 44, height: 40, bg_color: 0xFFFF00, radius: 4}
+              - obj: {align: TOP_LEFT, x: 208, y: 0, width: 44, height: 40, bg_color: 0x00FFFF, radius: 4}
+              - obj: {align: TOP_LEFT, x: 256, y: 0, width: 44, height: 40, bg_color: 0xFF00FF, radius: 4}
+        - label:
+            align: BOTTOM_MID
+            y: -14
+            text_font: f_small
+            text_color: 0x9AA0B5
+            text: "Connecting to Wi-Fi..."
+
+    # Home screen. A wrapping flex container: the header takes a full row and
+    # every feature package appends its tile after it. Tiles are 148px wide, so
+    # two fit in portrait (320px) and three in landscape (480px). The page does
+    # not scroll (that would swallow the swipe gesture), so in landscape up to 9
+    # tiles fit (3 rows).
+    - id: home_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      pad_all: 6
+      layout:
+        type: flex
+        flex_flow: ROW_WRAP
+        pad_row: 8
+        pad_column: 8
+      # Dashboard: switch to portrait. Portrait: pull down the quick settings.
+      on_swipe_down:
+        - if:
+            condition:
+              lambda: 'return id(ui_mode) == "dashboard";'
+            then:
+              - script.execute:
+                  id: set_ui_mode
+                  mode: "phone"
+            else:
+              - lvgl.widget.show: quick_settings_panel
+      widgets:
+        - obj:
+            width: 100%
+            height: 128
+            bg_color: 0x11131A
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            widgets:
+              - label:
+                  id: lbl_home_time
+                  align: TOP_MID
+                  y: 0
+                  text_font: f_big
+                  text_color: 0xFFFFFF
+                  text: "--:--"
+              - label:
+                  id: lbl_home_date
+                  align: TOP_MID
+                  y: 74
+                  text_font: f_med
+                  text_color: 0x9AA0B5
+                  text: ""
+              - label:
+                  id: lbl_home_status
+                  align: TOP_MID
+                  y: 100
+                  width: 100%
+                  long_mode: DOT
+                  text_align: CENTER
+                  text_font: f_small
+                  text_color: 0x7DD3FC
+                  text: ""
+        - button:
+            width: 148
+            height: 48
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "SETTINGS"}
+            on_click:
+              - lvgl.page.show: settings_page
+
+    # Local settings only (backlight, diagnostics, sound); width-agnostic so it
+    # works in both orientations.
+    - id: settings_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        - label: {align: TOP_MID, y: 6, text_font: f_med, text_color: 0xFFFFFF, text: "Settings"}
+        - label: {align: TOP_MID, y: 32, text_font: f_small, text_color: 0x9AA0B5, text: "Backlight"}
+        - slider:
+            id: brightness_slider
+            align: TOP_MID
+            y: 52
+            width: 90%
+            height: 20
+            min_value: 10
+            max_value: 100
+            value: 100
+            on_value:
+              then:
+                - light.turn_on:
+                    id: backlight
+                    brightness: !lambda 'return x / 100.0f;'
+        - label: {id: lbl_cpu, align: TOP_MID, y: 80, text_font: f_small, text_color: 0x7DD3FC, text: "CPU: -- C"}
+        - label: {id: lbl_wifi, align: TOP_MID, y: 100, text_font: f_small, text_color: 0x9AA0B5, text: "WiFi: --"}
+        - label: {align: TOP_LEFT, x: 20, y: 132, text_font: f_small, text_color: 0xFFFFFF, text: "Buzzer sound"}
+        - switch:
+            id: buzzer_sound_switch
+            align: TOP_RIGHT
+            x: -20
+            y: 128
+            state:
+              checked: true
+            on_value:
+              then:
+                - lambda: 'id(buzzer_muted) = !x;'
+        - button:
+            align: TOP_LEFT
+            x: 20
+            y: 166
+            width: 45%
+            height: 40
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "Test sound"}
+            on_click:
+              # Bypasses buzzer_muted on purpose: a test button should be heard.
+              - repeat:
+                  count: 3
+                  then:
+                    - output.set_level:
+                        id: buzzer_pwm
+                        level: 98%
+                    - delay: 100ms
+                    - output.turn_off: buzzer_pwm
+                    - delay: 100ms
+        - button:
+            align: TOP_RIGHT
+            x: -20
+            y: 166
+            width: 45%
+            height: 40
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "Refresh HA"}
+            on_click:
+              - script.execute: refresh_ha_display
+        - button:
+            align: BOTTOM_LEFT
+            x: 20
+            y: -14
+            width: 45%
+            height: 56
+            bg_color: 0x4B5563
+            radius: 10
+            widgets:
+              - label: {align: CENTER, text_font: f_med, text_color: 0xFFFFFF, text: "BACK"}
+            on_click:
+              - script.execute: goto_home
+        - button:
+            align: BOTTOM_RIGHT
+            x: -20
+            y: -14
+            width: 45%
+            height: 56
+            bg_color: 0x2563EB
+            radius: 10
+            widgets:
+              - label:
+                  align: CENTER
+                  text_font: f_small
+                  text_color: 0xFFFFFF
+                  text: "Switch layout"
+            on_click:
+              - script.execute:
+                  id: set_ui_mode
+                  mode: !lambda 'return id(ui_mode) == "dashboard" ? std::string("phone") : std::string("dashboard");'
+
+  top_layer:
+    widgets:
+      # Starts visible: on_disconnect only fires on a connected->disconnected
+      # transition, not for "never connected yet".
+      - label:
+          id: lbl_no_wifi
+          align: TOP_RIGHT
+          x: -6
+          y: 6
+          text_font: f_small
+          text_color: 0xDC2626
+          text: "NO WIFI"
+      # "Please wait" indicator for the network-bound scripts. Has no dismiss
+      # handler on purpose: it reflects a request that is really in progress.
+      - obj:
+          id: loading_dialog
+          hidden: true
+          align: CENTER
+          width: 200
+          height: 80
+          bg_color: 0x1F2430
+          radius: 12
+          border_color: 0x3B4252
+          border_width: 2
+          scrollable: false
+          widgets:
+            - label:
+                align: CENTER
+                text_font: f_med
+                text_color: 0xFFFFFF
+                text: "Please wait..."
+      # Portrait only: revealed by swiping down on the home page.
+      - obj:
+          id: quick_settings_panel
+          hidden: true
+          align: TOP_MID
+          y: 0
+          width: 320
+          height: 210
+          bg_color: 0x1F2430
+          radius: 0
+          border_width: 0
+          scrollable: false
+          widgets:
+            - label: {align: TOP_MID, y: 10, text_font: f_small, text_color: 0x9AA0B5, text: "Quick settings"}
+            - label: {align: TOP_LEFT, x: 14, y: 38, text_font: f_small, text_color: 0xFFFFFF, text: "Backlight"}
+            - slider:
+                id: brightness_slider_qs
+                align: TOP_MID
+                y: 58
+                width: 290
+                height: 20
+                min_value: 10
+                max_value: 100
+                value: 100
+                on_value:
+                  then:
+                    - light.turn_on:
+                        id: backlight
+                        brightness: !lambda 'return x / 100.0f;'
+            - button:
+                align: TOP_LEFT
+                x: 14
+                y: 100
+                width: 140
+                height: 44
+                bg_color: 0x2C3345
+                radius: 8
+                widgets:
+                  - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "Test sound"}
+                on_click:
+                  - repeat:
+                      count: 3
+                      then:
+                        - output.set_level: {id: buzzer_pwm, level: 98%}
+                        - delay: 100ms
+                        - output.turn_off: buzzer_pwm
+                        - delay: 100ms
+            - button:
+                align: TOP_RIGHT
+                x: -14
+                y: 100
+                width: 140
+                height: 44
+                bg_color: 0x2563EB
+                radius: 8
+                widgets:
+                  - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "Landscape"}
+                on_click:
+                  - lvgl.widget.hide: quick_settings_panel
+                  - script.execute:
+                      id: set_ui_mode
+                      mode: "dashboard"
+            - button:
+                align: BOTTOM_MID
+                y: -12
+                width: 140
+                height: 44
+                bg_color: 0x4B5563
+                radius: 8
+                widgets:
+                  - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "Close"}
+                on_click:
+                  - lvgl.widget.hide: quick_settings_panel
