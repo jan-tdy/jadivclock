@@ -1,0 +1,138 @@
+# Elecrow CrowPanel Advance 3.5" (DIS01835A, HW V1.2 / V1.3 / V1.4):
+# ESP32-S3, 16MB flash, octal PSRAM, ILI9488 over SPI, GT911 touch,
+# PCF8563 RTC, PWM backlight and a self-oscillating buzzer.
+#
+# Pins are taken from Elecrow's own factory examples. The panel is natively
+# portrait (320x480); landscape is done at runtime with lvgl.display.set_rotation.
+#
+# Contract for hardware packages (what ui/base and the features rely on):
+#   ids:   my_display, my_touch, backlight (light), buzzer_pwm (output),
+#          rtc_time (optional), script `beep`, global `buzzer_muted`
+esphome:
+  on_boot:
+    # Load time from the onboard RTC before Wi-Fi/SNTP are up, so the clock is
+    # valid right after a power loss. SNTP keeps correcting it afterwards.
+    - pcf8563.read_time: rtc_time
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      # The default main-task stack (3584 bytes) is too small for the JSON
+      # parsing done in the Todoist/weather callbacks.
+      CONFIG_ESP_MAIN_TASK_STACK_SIZE: "16384"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+i2c:
+  - id: bus_a
+    sda: GPIO15
+    scl: GPIO16
+    scan: true
+
+spi:
+  id: tft_spi
+  clk_pin: GPIO42
+  mosi_pin: GPIO39
+  # no miso_pin: the panel is write-only
+
+time:
+  # Declared in core; extended here so the RTC follows SNTP.
+  - id: !extend sntp_time
+    on_time_sync:
+      # Keep the RTC accurate for the next reboot (RTC crystals drift).
+      then:
+        - pcf8563.write_time: rtc_time
+  # The timezone must be set here too: ESPHome's timezone is process-global and
+  # this platform's setup() runs after sntp's, so leaving it unset would
+  # silently reset it to UTC. Only read explicitly at boot (update_interval:
+  # never) so it never fights SNTP over which one is authoritative.
+  - platform: pcf8563
+    id: rtc_time
+    i2c_id: bus_a
+    timezone: ${timezone}
+    update_interval: never
+
+globals:
+  - id: buzzer_muted
+    type: bool
+    initial_value: 'false'
+
+output:
+  # Backlight on GPIO38 is not default-on: nothing drives it unless we do.
+  - platform: ledc
+    id: backlight_pwm
+    pin: GPIO38
+    frequency: 5000 Hz
+  # Buzzer on GPIO8: a self-oscillating buzzer driven by PWM duty cycle. It has
+  # a fixed pitch, so sounds are distinguished by the number of pulses.
+  - platform: ledc
+    id: buzzer_pwm
+    pin: GPIO8
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: "Display Backlight"
+    output: backlight_pwm
+    # RESTORE_DEFAULT_ON keeps the last brightness, but never starts dark.
+    restore_mode: RESTORE_DEFAULT_ON
+
+switch:
+  # Deliberately ignores buzzer_muted: an explicit action from Home Assistant
+  # should sound regardless of the on-device mute setting.
+  - platform: output
+    name: "Buzzer"
+    output: buzzer_pwm
+
+script:
+  # `count` short beeps, unless muted from the settings page.
+  - id: beep
+    parameters:
+      count: int
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(buzzer_muted);'
+          then:
+            - repeat:
+                count: !lambda 'return count;'
+                then:
+                  - output.set_level:
+                      id: buzzer_pwm
+                      level: 98%
+                  - delay: 100ms
+                  - output.turn_off: buzzer_pwm
+                  - delay: 100ms
+
+display:
+  - platform: ili9xxx
+    id: my_display
+    spi_id: tft_spi
+    model: ILI9488
+    cs_pin: GPIO40
+    dc_pin: GPIO41
+    reset_pin: GPIO2
+    # ili9xxx ignores dimensions: for named models; rotation is applied by LVGL.
+    invert_colors: true
+    auto_clear_enabled: false
+    update_interval: never
+
+touchscreen:
+  - platform: gt911
+    id: my_touch
+    display: my_display
+    i2c_id: bus_a
+    address: 0x5D
+
+lvgl:
+  # 25% is the best trade-off between responsiveness and ghosting on this panel.
+  buffer_size: 25%
+  displays:
+    - my_display
+  touchscreens:
+    - my_touch

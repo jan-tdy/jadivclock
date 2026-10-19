@@ -1,0 +1,324 @@
+# Send a free-text broadcast or a question to another panel (or anything else
+# that listens to Home Assistant `text` entities) from an on-screen keyboard.
+#
+# - Broadcast: writes the text into the target's broadcast entity (the entity
+#   created by features/broadcast.yaml on the other panel).
+# - Question: writes the text into the target's question entity, then waits up
+#   to 60 seconds for the target's answer entity. Home Assistant needs an
+#   automation on the answering side: set the answer entity to "waiting" when a
+#   question arrives, then to the real answer ("Yes", "No", free text, ...).
+#   "waiting" (re)starts the 60 second window here.
+#
+# Substitutions:
+#   bc_target_name                  shown in the UI
+#   bc_target_broadcast_entity      text entity the broadcast is written to
+#   bc_target_question_entity       text entity the question is written to
+#   bc_target_answer_entity         text entity the answer is read from
+#   bc_broadcast_domain / bc_question_domain
+#                                   `text` (default, e.g. another panel's
+#                                   broadcast entity) or `input_text` (a Home
+#                                   Assistant helper). `text.set_value` only
+#                                   accepts `text` entities and
+#                                   `input_text.set_value` only helpers.
+#
+# The on-screen keyboard is ASCII only.
+#
+# Requires: core.yaml, ui/base.yaml, a hw/ package (for `beep`)
+substitutions:
+  bc_target_name: "Remote panel"
+  bc_target_broadcast_entity: text.remote_panel_broadcast
+  bc_target_question_entity: text.remote_panel_question
+  bc_target_answer_entity: text.remote_panel_question_answer
+  bc_broadcast_domain: text
+  bc_question_domain: text
+
+globals:
+  # "broadcast" or "question", set by the mode picker.
+  - id: bc_mode
+    type: std::string
+    initial_value: '"broadcast"'
+  # Live-synced from the textarea's on_value.
+  - id: bc_typed_text
+    type: std::string
+    initial_value: '""'
+  # True from the moment a question is sent until the answer arrives or the 60s
+  # window elapses. Gates the answer popup so another panel's answer never pops
+  # up here.
+  - id: bc_awaiting_answer
+    type: bool
+    initial_value: 'false'
+
+text_sensor:
+  - platform: homeassistant
+    id: bc_question_answer
+    entity_id: ${bc_target_answer_entity}
+    internal: true
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(bc_awaiting_answer);'
+            then:
+              - if:
+                  condition:
+                    lambda: 'return x == std::string("waiting") || x.empty();'
+                  then:
+                    - lvgl.label.update: {id: lbl_bc_answer, text: "Question sent.\nWaiting for the answer..."}
+                    - lvgl.widget.show: bc_answer_scrim
+                    - lvgl.widget.show: bc_answer_dlg
+                    - script.execute: bc_answer_timeout
+                  else:
+                    - globals.set: {id: bc_awaiting_answer, value: 'false'}
+                    - script.stop: bc_answer_timeout
+                    - lvgl.label.update:
+                        id: lbl_bc_answer
+                        text: !lambda 'return std::string("Answer from ${bc_target_name}:\n") + x;'
+                    - lvgl.widget.show: bc_answer_scrim
+                    - lvgl.widget.show: bc_answer_dlg
+                    - script.execute: {id: beep, count: 2}
+                    - script.execute: bc_hide_answer_delayed
+
+script:
+  # Sends only a non-empty text. The composer is cleared and the panel goes home
+  # only once Home Assistant accepted the action (on_success); on a rejection
+  # the typed text is kept and the failure is shown.
+  - id: bc_send
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(bc_typed_text).empty();'
+          then:
+            - if:
+                condition:
+                  lambda: 'return id(bc_mode) == std::string("question");'
+                then:
+                  - homeassistant.action:
+                      action: ${bc_question_domain}.set_value
+                      data:
+                        entity_id: ${bc_target_question_entity}
+                        value: !lambda 'return id(bc_typed_text);'
+                      on_success:
+                        - globals.set: {id: bc_awaiting_answer, value: 'true'}
+                        - lvgl.label.update: {id: lbl_bc_answer, text: "Question sent.\nWaiting for the answer..."}
+                        - lvgl.widget.show: bc_answer_scrim
+                        - lvgl.widget.show: bc_answer_dlg
+                        - script.execute: bc_answer_timeout
+                        - script.execute: bc_finish_send
+                      on_error:
+                        - script.execute: bc_send_failed
+                else:
+                  - homeassistant.action:
+                      action: ${bc_broadcast_domain}.set_value
+                      data:
+                        entity_id: ${bc_target_broadcast_entity}
+                        value: !lambda 'return id(bc_typed_text);'
+                      on_success:
+                        - script.execute: bc_finish_send
+                      on_error:
+                        - script.execute: bc_send_failed
+          else:
+            - script.execute: bc_finish_send
+
+  - id: bc_finish_send
+    then:
+      - lvgl.textarea.update: {id: ta_bc, text: ""}
+      - globals.set: {id: bc_typed_text, value: '""'}
+      - script.execute: goto_home
+
+  - id: bc_send_failed
+    then:
+      - lvgl.label.update: {id: lbl_bc_dest, text: "Send failed - check Home Assistant"}
+      - script.execute: {id: beep, count: 1}
+
+  # 60s backstop for the answer. Armed at send, restarted whenever the answer
+  # entity goes "waiting". If it fires while still waiting, give up.
+  - id: bc_answer_timeout
+    mode: restart
+    then:
+      - delay: 60s
+      - if:
+          condition:
+            lambda: 'return id(bc_awaiting_answer);'
+          then:
+            - globals.set: {id: bc_awaiting_answer, value: 'false'}
+            - lvgl.label.update: {id: lbl_bc_answer, text: "No answer (60s)."}
+            - script.execute: bc_hide_answer_delayed
+
+  - id: bc_hide_answer_delayed
+    mode: restart
+    then:
+      - delay: 20s
+      - lvgl.widget.hide: bc_answer_dlg
+      - lvgl.widget.hide: bc_answer_scrim
+
+lvgl:
+  pages:
+    - id: !extend home_page
+      widgets:
+        - button:
+            width: 148
+            height: 48
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "SEND MESSAGE"}
+            on_click:
+              - lvgl.widget.show: bc_mode_dlg
+
+    # Composer: textarea + on-screen keyboard. Percent sizes, so it works in
+    # both orientations.
+    - id: bc_send_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        - label: {id: lbl_bc_dest, align: TOP_MID, y: 4, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - textarea:
+            id: ta_bc
+            align: TOP_MID
+            y: 22
+            width: 96%
+            height: 40
+            one_line: true
+            max_length: 120
+            placeholder_text: "Type a message..."
+            on_value:
+              then:
+                - globals.set: {id: bc_typed_text, value: !lambda 'return text;'}
+        - keyboard:
+            id: kb_bc
+            align: TOP_MID
+            y: 66
+            width: 100%
+            height: 202
+            mode: TEXT_LOWER
+            textarea: ta_bc
+        - button:
+            align: BOTTOM_LEFT
+            x: 8
+            y: -4
+            width: 45%
+            height: 40
+            bg_color: 0x4B5563
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "CANCEL"}
+            on_click:
+              - lvgl.textarea.update: {id: ta_bc, text: ""}
+              - globals.set: {id: bc_typed_text, value: '""'}
+              - script.execute: goto_home
+        - button:
+            align: BOTTOM_RIGHT
+            x: -8
+            y: -4
+            width: 45%
+            height: 40
+            bg_color: 0x16A34A
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "SEND"}
+            on_click:
+              - script.execute: bc_send
+
+  top_layer:
+    widgets:
+      # Mode picker opened by the SEND MESSAGE tile. Each mode button also
+      # resets the composer before navigating to it.
+      - obj:
+          id: bc_mode_dlg
+          hidden: true
+          align: CENTER
+          width: 300
+          height: 196
+          bg_color: 0x1F2430
+          radius: 16
+          border_color: 0x3B4252
+          border_width: 2
+          scrollable: false
+          widgets:
+            - label: {align: TOP_MID, y: 16, width: 270, long_mode: DOT, text_align: CENTER, text_font: f_med, text_color: 0xFFFFFF, text: "Send to ${bc_target_name}"}
+            - button:
+                align: TOP_MID
+                y: 48
+                width: 260
+                height: 40
+                bg_color: 0xF59E0B
+                radius: 8
+                widgets:
+                  - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "BROADCAST"}
+                on_click:
+                  - globals.set: {id: bc_mode, value: '"broadcast"'}
+                  - lvgl.label.update: {id: lbl_bc_dest, text: "Broadcast -> ${bc_target_name}"}
+                  - lvgl.textarea.update: {id: ta_bc, text: ""}
+                  - globals.set: {id: bc_typed_text, value: '""'}
+                  - lvgl.widget.hide: bc_mode_dlg
+                  - lvgl.page.show: bc_send_page
+            - button:
+                align: TOP_MID
+                y: 96
+                width: 260
+                height: 40
+                bg_color: 0x2563EB
+                radius: 8
+                widgets:
+                  - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "QUESTION"}
+                on_click:
+                  - globals.set: {id: bc_mode, value: '"question"'}
+                  - lvgl.label.update: {id: lbl_bc_dest, text: "Question -> ${bc_target_name}"}
+                  - lvgl.textarea.update: {id: ta_bc, text: ""}
+                  - globals.set: {id: bc_typed_text, value: '""'}
+                  - lvgl.widget.hide: bc_mode_dlg
+                  - lvgl.page.show: bc_send_page
+            - button:
+                align: BOTTOM_MID
+                y: -12
+                width: 120
+                height: 32
+                bg_color: 0x4B5563
+                radius: 8
+                widgets:
+                  - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "CANCEL"}
+                on_click:
+                  - lvgl.widget.hide: bc_mode_dlg
+
+      # Separate scrim + dialog for the answer flow, so its hide timers cannot
+      # clobber the incoming-message popup of features/broadcast.yaml.
+      - obj:
+          id: bc_answer_scrim
+          hidden: true
+          align: TOP_LEFT
+          x: 0
+          y: 0
+          width: 100%
+          height: 100%
+          bg_color: 0x2A2A2A
+          border_width: 0
+          radius: 0
+          scrollable: false
+          on_click:
+            - lvgl.widget.hide: bc_answer_scrim
+            - lvgl.widget.hide: bc_answer_dlg
+      - obj:
+          id: bc_answer_dlg
+          hidden: true
+          align: CENTER
+          width: 300
+          height: 180
+          bg_color: 0x10241E
+          radius: 16
+          border_color: 0x16A34A
+          border_width: 2
+          scrollable: false
+          widgets:
+            - label:
+                id: lbl_bc_answer
+                align: CENTER
+                width: 264
+                long_mode: WRAP
+                text_align: CENTER
+                text_font: f_med
+                text_color: 0xFFFFFF
+                text: ""
+          on_click:
+            - lvgl.widget.hide: bc_answer_dlg
+            - lvgl.widget.hide: bc_answer_scrim

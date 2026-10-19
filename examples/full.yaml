@@ -1,0 +1,52 @@
+# Example: every feature enabled. Copy to your ESPHome config directory,
+# rename, and edit the substitutions. Features you do not want can simply be
+# removed from `packages:`.
+#
+# secrets.yaml needs: wifi_ssid, wifi_password, api_encryption_key,
+# ota_password and (for todoist) todoist_token. See secrets.example.yaml.
+substitutions:
+  name: my-clock
+  friendly_name: My JadivClock
+  user_name: "Alex"
+  timezone: Europe/Berlin
+  # Weather location (also used as the time zone for the forecast: keep
+  # `timezone` above in sync).
+  weather_lat: "52.52"
+  weather_lon: "13.405"
+  weather_title: "Weather - Berlin"
+  # Lights
+  light_1_entity: light.living_room
+  light_1_name: "Living room"
+  light_2_entity: light.office
+  light_2_name: "Office"
+  # Thermometers (1 = outdoor)
+  thermo_1_temp: sensor.outdoor_temperature
+  thermo_1_humidity: sensor.outdoor_humidity
+  thermo_2_name: "Living room"
+  thermo_2_temp: sensor.living_room_temperature
+  thermo_2_humidity: sensor.living_room_humidity
+  thermo_3_name: "Office"
+  thermo_3_temp: sensor.office_temperature
+  thermo_3_humidity: sensor.office_humidity
+  # Vacuum
+  vacuum_entity: vacuum.robot
+  # Calendar row in the Todoist agenda
+  calendar_entity: calendar.my_calendar
+  # Other panel for "Send message"
+  bc_target_name: "Kitchen panel"
+  bc_target_broadcast_entity: text.kitchen_panel_broadcast
+  bc_target_question_entity: text.kitchen_panel_question
+  bc_target_answer_entity: text.kitchen_panel_question_answer
+
+packages:
+  core: github://jan-tdy/jadivclock/packages/core.yaml@main
+  hw: github://jan-tdy/jadivclock/packages/hw/crowpanel_35.yaml@main
+  ui: github://jan-tdy/jadivclock/packages/ui/base.yaml@main
+  weather: github://jan-tdy/jadivclock/packages/features/weather.yaml@main
+  todoist: github://jan-tdy/jadivclock/packages/features/todoist.yaml@main
+  todoist_calendar: github://jan-tdy/jadivclock/packages/features/todoist_calendar.yaml@main
+  lights: github://jan-tdy/jadivclock/packages/features/lights.yaml@main
+  thermometers: github://jan-tdy/jadivclock/packages/features/thermometers.yaml@main
+  vacuum: github://jan-tdy/jadivclock/packages/features/vacuum.yaml@main
+  broadcast: github://jan-tdy/jadivclock/packages/features/broadcast.yaml@main
+  broadcast_send: github://jan-tdy/jadivclock/packages/features/broadcast_send.yaml@main

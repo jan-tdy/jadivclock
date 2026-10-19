@@ -1,0 +1,300 @@
+# Weather page: Open-Meteo (no API key). Current conditions, next 12 hours as a
+# bar per hour, and today + 5 days.
+#
+# Substitutions (set yours in your own config):
+#   weather_lat / weather_lon  location, decimal degrees
+#   weather_title              page title
+#   weather_bar_min/max        temperature range (deg C) of the hourly bars
+#
+# The hourly forecast is requested in the location's own time zone
+# (timezone=auto) and matched against the device clock, so set `timezone`
+# (core) to the location's time zone.
+#
+# Requires: core.yaml, ui/base.yaml
+substitutions:
+  weather_lat: "51.5074"
+  weather_lon: "-0.1278"
+  weather_title: "Weather"
+  weather_bar_min: "-10"
+  weather_bar_max: "40"
+
+globals:
+  - id: weather_text
+    type: std::string
+    initial_value: '""'
+
+script:
+  # current + next 12 hours + next 6 days in a single call (a few kB).
+  - id: fetch_weather
+    then:
+      - lvgl.label.update: {id: lbl_weather, text: "Loading weather..."}
+      - http_request.get:
+          url: "https://api.open-meteo.com/v1/forecast?latitude=${weather_lat}&longitude=${weather_lon}&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m&hourly=temperature_2m&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=6&timezone=auto"
+          capture_response: true
+          max_response_buffer_size: 16kB
+          on_response:
+            then:
+              - lambda: |-
+                  ESP_LOGD("wx", "status=%d len=%d", response->status_code, (int) body.size());
+                  auto doc = json::parse_json(body);
+                  if (doc.isNull()) {
+                    id(weather_text) = "Weather unavailable";
+                    return;
+                  }
+                  // WMO weather interpretation codes, grouped into buckets.
+                  auto wx_desc = [](int code) -> const char* {
+                    if (code == 0) return "Clear";
+                    else if (code >= 1 && code <= 2) return "Partly cloudy";
+                    else if (code == 3) return "Cloudy";
+                    else if (code == 45 || code == 48) return "Fog";
+                    else if (code >= 51 && code <= 57) return "Drizzle";
+                    else if (code >= 61 && code <= 67) return "Rain";
+                    else if (code >= 71 && code <= 77) return "Snow";
+                    else if (code >= 80 && code <= 82) return "Showers";
+                    else if (code >= 85 && code <= 86) return "Snow showers";
+                    else if (code >= 95 && code <= 99) return "Thunderstorm";
+                    return "Unknown";
+                  };
+                  // No icon font: each icon is a composite of plain LVGL shapes
+                  // (sun, cloud, two rain bars, one bolt bar). Five visible
+                  // combinations: sun, sun+cloud, cloud, cloud+rain (pale for
+                  // snow) and cloud+bolt.
+                  auto set_wx_icon = [](lv_obj_t *sun, lv_obj_t *cloud, lv_obj_t *rain1, lv_obj_t *rain2, lv_obj_t *bolt, int code) {
+                    bool show_sun = (code == 0) || (code == 1) || (code == 2);
+                    bool show_cloud = (code != 0);
+                    bool is_snow = (code >= 71 && code <= 77) || (code >= 85 && code <= 86);
+                    bool is_rain = (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || is_snow;
+                    bool is_storm = (code >= 95 && code <= 99);
+                    if (show_sun) lv_obj_clear_flag(sun, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(sun, LV_OBJ_FLAG_HIDDEN);
+                    if (show_cloud) lv_obj_clear_flag(cloud, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(cloud, LV_OBJ_FLAG_HIDDEN);
+                    if (is_rain) {
+                      lv_obj_clear_flag(rain1, LV_OBJ_FLAG_HIDDEN);
+                      lv_obj_clear_flag(rain2, LV_OBJ_FLAG_HIDDEN);
+                      uint32_t rc = is_snow ? 0xE0F2FE : 0x378ADD;
+                      lv_obj_set_style_bg_color(rain1, lv_color_hex(rc), 0);
+                      lv_obj_set_style_bg_color(rain2, lv_color_hex(rc), 0);
+                    } else {
+                      lv_obj_add_flag(rain1, LV_OBJ_FLAG_HIDDEN);
+                      lv_obj_add_flag(rain2, LV_OBJ_FLAG_HIDDEN);
+                    }
+                    if (is_storm) lv_obj_clear_flag(bolt, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(bolt, LV_OBJ_FLAG_HIDDEN);
+                  };
+
+                  JsonObject cur = doc["current"].as<JsonObject>();
+                  if (!cur.isNull()) {
+                    float temp = cur["temperature_2m"] | 0.0f;
+                    float wind = cur["wind_speed_10m"] | 0.0f;
+                    int hum = cur["relative_humidity_2m"] | 0;
+                    int code = cur["weather_code"] | -1;
+                    char b[96];
+                    snprintf(b, sizeof(b), "%s\n%.1f C\nWind %.0f km/h  Humidity %d%%", wx_desc(code), temp, wind, hum);
+                    id(weather_text) = std::string(b);
+                    set_wx_icon(id(icon_cur_sun), id(icon_cur_cloud), id(icon_cur_rain1), id(icon_cur_rain2), id(icon_cur_bolt), code);
+                  } else {
+                    id(weather_text) = "Weather unavailable";
+                  }
+
+                  // Next 12 hours as one lv_bar per hour (LVGL's chart widget is
+                  // compiled out of ESPHome's lv_conf.h).
+                  JsonObject hourly = doc["hourly"];
+                  if (!hourly.isNull()) {
+                    JsonArray htime = hourly["time"];
+                    JsonArray htemp = hourly["temperature_2m"];
+                    if (!htime.isNull() && !htemp.isNull()) {
+                      lv_obj_t *bars[12] = {id(bar_h_1), id(bar_h_2), id(bar_h_3), id(bar_h_4),
+                                            id(bar_h_5), id(bar_h_6), id(bar_h_7), id(bar_h_8),
+                                            id(bar_h_9), id(bar_h_10), id(bar_h_11), id(bar_h_12)};
+                      lv_obj_t *hlbls[12] = {id(hlbl_1), id(hlbl_2), id(hlbl_3), id(hlbl_4),
+                                             id(hlbl_5), id(hlbl_6), id(hlbl_7), id(hlbl_8),
+                                             id(hlbl_9), id(hlbl_10), id(hlbl_11), id(hlbl_12)};
+                      auto t = id(sntp_time).now();
+                      char now_prefix[14];
+                      snprintf(now_prefix, sizeof(now_prefix), "%04d-%02d-%02dT%02d", t.year, t.month, t.day_of_month, t.hour);
+                      size_t start = 0;
+                      for (size_t i = 0; i < htime.size(); i++) {
+                        const char *ts = htime[i];
+                        if (ts != nullptr && strncmp(ts, now_prefix, 13) >= 0) { start = i; break; }
+                      }
+                      char hbuf[12][4];
+                      for (int i = 0; i < 12; i++) {
+                        size_t idx = start + i;
+                        if (idx < htemp.size()) {
+                          float ht = htemp[idx] | 0.0f;
+                          lv_bar_set_value(bars[i], (int) roundf(ht), LV_ANIM_OFF);
+                          const char *ts = htime[idx];
+                          int hh = (ts != nullptr && strlen(ts) >= 13) ? ((ts[11] - '0') * 10 + (ts[12] - '0')) : 0;
+                          snprintf(hbuf[i], sizeof(hbuf[i]), "%02d", hh);
+                          lv_label_set_text(hlbls[i], hbuf[i]);
+                        }
+                      }
+                    }
+                  }
+
+                  // Today + next 5 days. day_of_week is 1=Sunday..7=Saturday;
+                  // daily.time[0] is today, so day i is today's weekday + i.
+                  JsonObject daily = doc["daily"];
+                  if (!daily.isNull()) {
+                    JsonArray dcode = daily["weather_code"];
+                    JsonArray dmax = daily["temperature_2m_max"];
+                    JsonArray dmin = daily["temperature_2m_min"];
+                    if (!dcode.isNull()) {
+                      lv_obj_t *dsun[6]   = {id(day1_sun),   id(day2_sun),   id(day3_sun),   id(day4_sun),   id(day5_sun),   id(day6_sun)};
+                      lv_obj_t *dcloud[6] = {id(day1_cloud), id(day2_cloud), id(day3_cloud), id(day4_cloud), id(day5_cloud), id(day6_cloud)};
+                      lv_obj_t *drain1[6] = {id(day1_rain1), id(day2_rain1), id(day3_rain1), id(day4_rain1), id(day5_rain1), id(day6_rain1)};
+                      lv_obj_t *drain2[6] = {id(day1_rain2), id(day2_rain2), id(day3_rain2), id(day4_rain2), id(day5_rain2), id(day6_rain2)};
+                      lv_obj_t *dbolt[6]  = {id(day1_bolt),  id(day2_bolt),  id(day3_bolt),  id(day4_bolt),  id(day5_bolt),  id(day6_bolt)};
+                      lv_obj_t *dlbls[6] = {id(day_lbl_1), id(day_lbl_2), id(day_lbl_3),
+                                            id(day_lbl_4), id(day_lbl_5), id(day_lbl_6)};
+                      const char *days3[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+                      // Short enough for one line in a 50px column at f_small.
+                      auto wx_desc_short = [](int code) -> const char* {
+                        if (code == 0) return "Clear";
+                        else if (code >= 1 && code <= 2) return "P.cloudy";
+                        else if (code == 3) return "Cloudy";
+                        else if (code == 45 || code == 48) return "Fog";
+                        else if (code >= 51 && code <= 57) return "Drizzle";
+                        else if (code >= 61 && code <= 67) return "Rain";
+                        else if (code >= 71 && code <= 77) return "Snow";
+                        else if (code >= 80 && code <= 82) return "Showers";
+                        else if (code >= 85 && code <= 86) return "Sn.shwr";
+                        else if (code >= 95 && code <= 99) return "Storm";
+                        return "?";
+                      };
+                      auto t = id(sntp_time).now();
+                      char dbuf[6][28];
+                      for (int i = 0; i < 6 && i < (int) dcode.size(); i++) {
+                        int code = dcode[i] | -1;
+                        float mx = dmax.isNull() ? 0.0f : (float) (dmax[i] | 0.0f);
+                        float mn = dmin.isNull() ? 0.0f : (float) (dmin[i] | 0.0f);
+                        int dow = (t.day_of_week - 1 + i) % 7;
+                        snprintf(dbuf[i], sizeof(dbuf[i]), "%s\n%.0f/%.0f\n%s", days3[dow], mx, mn, wx_desc_short(code));
+                        lv_label_set_text(dlbls[i], dbuf[i]);
+                        set_wx_icon(dsun[i], dcloud[i], drain1[i], drain2[i], dbolt[i], code);
+                      }
+                    }
+                  }
+              - lvgl.label.update: {id: lbl_weather, text: !lambda 'return id(weather_text);'}
+          on_error:
+            then:
+              - lvgl.label.update: {id: lbl_weather, text: "Weather unavailable (connection error)"}
+
+lvgl:
+  pages:
+    - id: !extend home_page
+      widgets:
+        - button:
+            width: 148
+            height: 48
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "WEATHER"}
+            on_click:
+              - lvgl.page.show: weather_page
+              - script.execute: fetch_weather
+
+    # Bars and labels use explicit x/y (not a flex/grid parent) because a
+    # layout would override each bar's own geometry.
+    - id: weather_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        - label: {align: TOP_MID, y: 8, text_font: f_med, text_color: 0xFFFFFF, text: "${weather_title}"}
+        # Pictogram from plain shapes. radius is deliberately less than half the
+        # width: a perfect circle rendered corrupted on this display/LVGL combo.
+        - obj: {id: icon_cur_sun, align: TOP_LEFT, x: 40, y: 30, width: 28, height: 28, radius: 8, bg_color: 0xEDA100, border_width: 0, scrollable: false}
+        - obj: {id: icon_cur_cloud, align: TOP_LEFT, x: 15, y: 52, width: 46, height: 24, radius: 12, bg_color: 0xCBD1D9, border_width: 0, scrollable: false}
+        - obj: {id: icon_cur_rain1, align: TOP_LEFT, x: 26, y: 78, width: 4, height: 14, radius: 2, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: icon_cur_rain2, align: TOP_LEFT, x: 44, y: 78, width: 4, height: 14, radius: 2, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: icon_cur_bolt, align: TOP_LEFT, x: 32, y: 76, width: 8, height: 18, radius: 3, bg_color: 0xFACC15, border_width: 0, hidden: true, scrollable: false}
+        - label: {id: lbl_weather, align: TOP_LEFT, x: 90, y: 34, width: 215, long_mode: WRAP, text_font: f_small, text_color: 0xFFFFFF, text: "Loading weather..."}
+        - label: {align: TOP_MID, y: 104, text_font: f_small, text_color: 0x9AA0B5, text: "Next 12 hours"}
+
+        - bar: {id: bar_h_1, align: TOP_LEFT, x: 10, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_2, align: TOP_LEFT, x: 34, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_3, align: TOP_LEFT, x: 58, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_4, align: TOP_LEFT, x: 82, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_5, align: TOP_LEFT, x: 106, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_6, align: TOP_LEFT, x: 130, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_7, align: TOP_LEFT, x: 154, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_8, align: TOP_LEFT, x: 178, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_9, align: TOP_LEFT, x: 202, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_10, align: TOP_LEFT, x: 226, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_11, align: TOP_LEFT, x: 250, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - bar: {id: bar_h_12, align: TOP_LEFT, x: 274, y: 122, width: 15, height: 90, min_value: "${weather_bar_min}", max_value: "${weather_bar_max}", value: 0, bg_color: 0x1F2430, indicator: {bg_color: 0x3B82F6}}
+        - label: {id: hlbl_1, align: TOP_LEFT, x: 6, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_2, align: TOP_LEFT, x: 30, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_3, align: TOP_LEFT, x: 54, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_4, align: TOP_LEFT, x: 78, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_5, align: TOP_LEFT, x: 102, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_6, align: TOP_LEFT, x: 126, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_7, align: TOP_LEFT, x: 150, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_8, align: TOP_LEFT, x: 174, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_9, align: TOP_LEFT, x: 198, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_10, align: TOP_LEFT, x: 222, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_11, align: TOP_LEFT, x: 246, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {id: hlbl_12, align: TOP_LEFT, x: 270, y: 214, width: 24, text_align: CENTER, text_font: f_small, text_color: 0x9AA0B5, text: ""}
+        - label: {align: TOP_MID, y: 236, text_font: f_small, text_color: 0x9AA0B5, text: "Next 5 days"}
+        # 6 columns (today + 5): the same pictogram, scaled down, plus a
+        # "Day / max/min / condition" label underneath.
+        - obj: {id: day1_sun, align: TOP_LEFT, x: 31, y: 254, width: 12, height: 12, radius: 4, bg_color: 0xEDA100, border_width: 0, scrollable: false}
+        - obj: {id: day2_sun, align: TOP_LEFT, x: 81, y: 254, width: 12, height: 12, radius: 4, bg_color: 0xEDA100, border_width: 0, scrollable: false}
+        - obj: {id: day3_sun, align: TOP_LEFT, x: 131, y: 254, width: 12, height: 12, radius: 4, bg_color: 0xEDA100, border_width: 0, scrollable: false}
+        - obj: {id: day4_sun, align: TOP_LEFT, x: 181, y: 254, width: 12, height: 12, radius: 4, bg_color: 0xEDA100, border_width: 0, scrollable: false}
+        - obj: {id: day5_sun, align: TOP_LEFT, x: 231, y: 254, width: 12, height: 12, radius: 4, bg_color: 0xEDA100, border_width: 0, scrollable: false}
+        - obj: {id: day6_sun, align: TOP_LEFT, x: 281, y: 254, width: 12, height: 12, radius: 4, bg_color: 0xEDA100, border_width: 0, scrollable: false}
+        - obj: {id: day1_cloud, align: TOP_LEFT, x: 23, y: 263, width: 20, height: 11, radius: 5, bg_color: 0xCBD1D9, border_width: 0, scrollable: false}
+        - obj: {id: day2_cloud, align: TOP_LEFT, x: 73, y: 263, width: 20, height: 11, radius: 5, bg_color: 0xCBD1D9, border_width: 0, scrollable: false}
+        - obj: {id: day3_cloud, align: TOP_LEFT, x: 123, y: 263, width: 20, height: 11, radius: 5, bg_color: 0xCBD1D9, border_width: 0, scrollable: false}
+        - obj: {id: day4_cloud, align: TOP_LEFT, x: 173, y: 263, width: 20, height: 11, radius: 5, bg_color: 0xCBD1D9, border_width: 0, scrollable: false}
+        - obj: {id: day5_cloud, align: TOP_LEFT, x: 223, y: 263, width: 20, height: 11, radius: 5, bg_color: 0xCBD1D9, border_width: 0, scrollable: false}
+        - obj: {id: day6_cloud, align: TOP_LEFT, x: 273, y: 263, width: 20, height: 11, radius: 5, bg_color: 0xCBD1D9, border_width: 0, scrollable: false}
+        - obj: {id: day1_rain1, align: TOP_LEFT, x: 26, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day1_rain2, align: TOP_LEFT, x: 36, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day1_bolt, align: TOP_LEFT, x: 29, y: 273, width: 6, height: 10, radius: 2, bg_color: 0xFACC15, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day2_rain1, align: TOP_LEFT, x: 76, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day2_rain2, align: TOP_LEFT, x: 86, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day2_bolt, align: TOP_LEFT, x: 79, y: 273, width: 6, height: 10, radius: 2, bg_color: 0xFACC15, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day3_rain1, align: TOP_LEFT, x: 126, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day3_rain2, align: TOP_LEFT, x: 136, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day3_bolt, align: TOP_LEFT, x: 129, y: 273, width: 6, height: 10, radius: 2, bg_color: 0xFACC15, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day4_rain1, align: TOP_LEFT, x: 176, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day4_rain2, align: TOP_LEFT, x: 186, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day4_bolt, align: TOP_LEFT, x: 179, y: 273, width: 6, height: 10, radius: 2, bg_color: 0xFACC15, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day5_rain1, align: TOP_LEFT, x: 226, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day5_rain2, align: TOP_LEFT, x: 236, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day5_bolt, align: TOP_LEFT, x: 229, y: 273, width: 6, height: 10, radius: 2, bg_color: 0xFACC15, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day6_rain1, align: TOP_LEFT, x: 276, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day6_rain2, align: TOP_LEFT, x: 286, y: 274, width: 3, height: 8, radius: 1, bg_color: 0x378ADD, border_width: 0, hidden: true, scrollable: false}
+        - obj: {id: day6_bolt, align: TOP_LEFT, x: 279, y: 273, width: 6, height: 10, radius: 2, bg_color: 0xFACC15, border_width: 0, hidden: true, scrollable: false}
+        - label: {id: day_lbl_1, align: TOP_LEFT, x: 10, y: 288, width: 50, long_mode: WRAP, text_align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: ""}
+        - label: {id: day_lbl_2, align: TOP_LEFT, x: 60, y: 288, width: 50, long_mode: WRAP, text_align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: ""}
+        - label: {id: day_lbl_3, align: TOP_LEFT, x: 110, y: 288, width: 50, long_mode: WRAP, text_align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: ""}
+        - label: {id: day_lbl_4, align: TOP_LEFT, x: 160, y: 288, width: 50, long_mode: WRAP, text_align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: ""}
+        - label: {id: day_lbl_5, align: TOP_LEFT, x: 210, y: 288, width: 50, long_mode: WRAP, text_align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: ""}
+        - label: {id: day_lbl_6, align: TOP_LEFT, x: 260, y: 288, width: 50, long_mode: WRAP, text_align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: ""}
+        - button:
+            align: BOTTOM_LEFT
+            x: 20
+            y: -16
+            width: 130
+            height: 56
+            bg_color: 0x2C3345
+            radius: 10
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "REFRESH"}
+            on_click:
+              - script.execute: fetch_weather
+        - button:
+            align: BOTTOM_RIGHT
+            x: -20
+            y: -16
+            width: 130
+            height: 56
+            bg_color: 0x4B5563
+            radius: 10
+            widgets:
+              - label: {align: CENTER, text_font: f_med, text_color: 0xFFFFFF, text: "BACK"}
+            on_click:
+              - script.execute: goto_home

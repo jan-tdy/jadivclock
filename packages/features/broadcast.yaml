@@ -1,0 +1,86 @@
+# Incoming messages: a Home Assistant `text` entity ("Broadcast") exposed by
+# this panel. Whatever string Home Assistant writes into it pops up as a
+# dialog on the panel (with two beeps) and closes after a minute or on tap.
+#
+#   service: text.set_value
+#   target: {entity_id: text.<your_panel>_broadcast}
+#   data:   {value: "Dinner is ready"}
+#
+# Messages up to 12 characters are shown in a larger font. Only glyphs in the
+# font lists render (full ASCII by default; add more with font_extra_glyphs in
+# ui/base.yaml).
+#
+# Requires: core.yaml, ui/base.yaml, a hw/ package (for `beep`)
+text:
+  - platform: template
+    id: broadcast_text
+    name: "Broadcast"
+    mode: TEXT
+    optimistic: true
+    max_length: 120
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_broadcast_text
+            text_font: !lambda 'return x.length() <= 12 ? id(f_broadcast_big) : id(f_med);'
+            text: !lambda 'return x;'
+        - lvgl.widget.show: broadcast_scrim
+        - lvgl.widget.show: broadcast_dialog
+        - script.execute: hide_broadcast_delayed
+        - script.execute: {id: beep, count: 2}
+
+script:
+  # mode: restart, so a new message while one is showing resets the timer
+  # instead of stacking a second hide behind it.
+  - id: hide_broadcast_delayed
+    mode: restart
+    then:
+      - delay: 60s
+      - lvgl.widget.hide: broadcast_dialog
+      - lvgl.widget.hide: broadcast_scrim
+
+lvgl:
+  top_layer:
+    widgets:
+      # Full-screen backdrop behind the dialog; tapping outside closes both.
+      # Solid colour, no bg_opa blending: alpha-blended colours render wrong
+      # on this ILI9488 (inverted colours + BGR order).
+      - obj:
+          id: broadcast_scrim
+          hidden: true
+          align: TOP_LEFT
+          x: 0
+          y: 0
+          width: 100%
+          height: 100%
+          bg_color: 0x2A2A2A
+          border_width: 0
+          radius: 0
+          scrollable: false
+          on_click:
+            - lvgl.widget.hide: broadcast_scrim
+            - lvgl.widget.hide: broadcast_dialog
+      - obj:
+          id: broadcast_dialog
+          hidden: true
+          align: CENTER
+          width: 300
+          height: 180
+          bg_color: 0x2A2410
+          radius: 16
+          border_color: 0xF59E0B
+          border_width: 2
+          scrollable: false
+          widgets:
+            - label:
+                id: lbl_broadcast_text
+                align: CENTER
+                width: 260
+                long_mode: WRAP
+                text_align: CENTER
+                text_font: f_med
+                text_color: 0xFFFFFF
+                text: ""
+          on_click:
+            - lvgl.widget.hide: broadcast_dialog
+            - lvgl.widget.hide: broadcast_scrim

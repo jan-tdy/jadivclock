@@ -1,0 +1,343 @@
+# Home Assistant lights: on/off switch, brightness and colour-temperature
+# slider for two lights. The widgets follow the real state in Home Assistant
+# (changes made from HA or another client show up here too).
+#
+# Substitutions:
+#   light_1_entity / light_1_name, light_2_entity / light_2_name
+# The colour-temperature slider covers 2000-6500 K (typical for smart bulbs).
+#
+# Requires: core.yaml, ui/base.yaml
+substitutions:
+  light_1_entity: light.living_room
+  light_1_name: "Living room"
+  light_2_entity: light.office
+  light_2_name: "Office"
+
+api:
+  on_client_connected:
+    then:
+      - script.execute: resync_light_1
+      - script.execute: resync_light_2
+
+# Echo guard for the on/off switches. HA pushes the light's real state -> we
+# update the switch -> its own on_value fires (LVGL widgets publish on_value
+# for programmatic updates too, on a deferred tick) -> which would call
+# light.turn_on/off again and re-trigger HA. Each inbound update sets the flag
+# first; the switch's on_value consumes (clears) it. The resync script also
+# clears it after 500ms in case the value did not change and on_value never
+# fires, which would otherwise swallow the next real touch. The sliders need no
+# guard: they act on release, which a programmatic update does not trigger.
+globals:
+  - id: sync_sw_1
+    type: bool
+    initial_value: 'false'
+  - id: sync_sw_2
+    type: bool
+    initial_value: 'false'
+
+binary_sensor:
+  - platform: homeassistant
+    id: light_1_state
+    entity_id: ${light_1_entity}
+    internal: true
+    on_state:
+      then:
+        - script.execute: resync_light_1
+  - platform: homeassistant
+    id: light_2_state
+    entity_id: ${light_2_entity}
+    internal: true
+    on_state:
+      then:
+        - script.execute: resync_light_2
+
+sensor:
+  # Brightness readback (HA reports 0-255).
+  - platform: homeassistant
+    id: light_1_brightness
+    entity_id: ${light_1_entity}
+    attribute: brightness
+    internal: true
+    on_value:
+      then:
+        - script.execute: resync_light_1
+  - platform: homeassistant
+    id: light_1_kelvin
+    entity_id: ${light_1_entity}
+    attribute: color_temp_kelvin
+    internal: true
+    on_value:
+      then:
+        - script.execute: resync_light_1
+  # Brightness readback (HA reports 0-255).
+  - platform: homeassistant
+    id: light_2_brightness
+    entity_id: ${light_2_entity}
+    attribute: brightness
+    internal: true
+    on_value:
+      then:
+        - script.execute: resync_light_2
+  - platform: homeassistant
+    id: light_2_kelvin
+    entity_id: ${light_2_entity}
+    attribute: color_temp_kelvin
+    internal: true
+    on_value:
+      then:
+        - script.execute: resync_light_2
+
+script:
+  # Full resync of the page's widgets from the HA state ESPHome has cached:
+  # switch, sliders and slider colour (blue when on, grey when off). A
+  # periodic call (below) makes it self-healing; it is cheap because it only
+  # reads cached state.
+  - id: resync_light_1
+    mode: restart
+    then:
+      - globals.set: {id: sync_sw_1, value: 'true'}
+      - lvgl.widget.update:
+          id: sw_light_1
+          state:
+            checked: !lambda 'return id(light_1_state).state;'
+      # Sliders are left alone while a finger is on them, so a periodic or
+      # event-driven resync cannot move a slider mid-drag.
+      - if:
+          condition:
+            lambda: 'return !lv_obj_has_state(id(sl_light_1), LV_STATE_PRESSED);'
+          then:
+            - lvgl.slider.update:
+                id: sl_light_1
+                value: !lambda |-
+                  // HA drops the attribute while the light is off: NaN, not a number.
+                  float v = id(light_1_brightness).state;
+                  return (id(light_1_brightness).has_state() && !std::isnan(v))
+                    ? (int) (v / 255.0f * 100.0f) : 0;
+                indicator:
+                  bg_color: !lambda |-
+                    return id(light_1_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
+      - if:
+          condition:
+            lambda: 'return !lv_obj_has_state(id(sl_temp_1), LV_STATE_PRESSED);'
+          then:
+            - lvgl.slider.update:
+                id: sl_temp_1
+                value: !lambda |-
+                  float k = id(light_1_kelvin).state;
+                  return (id(light_1_kelvin).has_state() && !std::isnan(k))
+                    ? (int) k : 3000;
+                indicator:
+                  bg_color: !lambda |-
+                    return id(light_1_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
+      - delay: 500ms
+      - globals.set: {id: sync_sw_1, value: 'false'}
+  - id: resync_light_2
+    mode: restart
+    then:
+      - globals.set: {id: sync_sw_2, value: 'true'}
+      - lvgl.widget.update:
+          id: sw_light_2
+          state:
+            checked: !lambda 'return id(light_2_state).state;'
+      # Sliders are left alone while a finger is on them, so a periodic or
+      # event-driven resync cannot move a slider mid-drag.
+      - if:
+          condition:
+            lambda: 'return !lv_obj_has_state(id(sl_light_2), LV_STATE_PRESSED);'
+          then:
+            - lvgl.slider.update:
+                id: sl_light_2
+                value: !lambda |-
+                  // HA drops the attribute while the light is off: NaN, not a number.
+                  float v = id(light_2_brightness).state;
+                  return (id(light_2_brightness).has_state() && !std::isnan(v))
+                    ? (int) (v / 255.0f * 100.0f) : 0;
+                indicator:
+                  bg_color: !lambda |-
+                    return id(light_2_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
+      - if:
+          condition:
+            lambda: 'return !lv_obj_has_state(id(sl_temp_2), LV_STATE_PRESSED);'
+          then:
+            - lvgl.slider.update:
+                id: sl_temp_2
+                value: !lambda |-
+                  float k = id(light_2_kelvin).state;
+                  return (id(light_2_kelvin).has_state() && !std::isnan(k))
+                    ? (int) k : 3000;
+                indicator:
+                  bg_color: !lambda |-
+                    return id(light_2_state).state ? lv_color_hex(0x3B82F6) : lv_color_hex(0x4B5563);
+      - delay: 500ms
+      - globals.set: {id: sync_sw_2, value: 'false'}
+  - id: !extend refresh_ha_display
+    then:
+      - script.execute: resync_light_1
+      - script.execute: resync_light_2
+
+interval:
+  - interval: 20s
+    then:
+      - script.execute: resync_light_1
+      - script.execute: resync_light_2
+
+lvgl:
+  pages:
+    - id: !extend home_page
+      widgets:
+        - button:
+            width: 148
+            height: 48
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "LIGHTS"}
+            on_click:
+              - lvgl.page.show: lights_page
+
+    # Fits within the 320px landscape height.
+    - id: lights_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        - label: {align: TOP_MID, y: 6, text_font: f_med, text_color: 0xFFFFFF, text: "Lights"}
+        - label: {align: TOP_LEFT, x: 14, y: 34, text_font: f_small, text_color: 0xFFFFFF, text: "${light_1_name}"}
+        - switch:
+            id: sw_light_1
+            align: TOP_RIGHT
+            x: -14
+            y: 30
+            on_value:
+              then:
+                - if:
+                    condition:
+                      lambda: 'return id(sync_sw_1);'
+                    then:
+                      - globals.set: {id: sync_sw_1, value: 'false'}
+                    else:
+                      - homeassistant.action:
+                          action: !lambda 'return x ? std::string("light.turn_on") : std::string("light.turn_off");'
+                          data:
+                            entity_id: ${light_1_entity}
+        - slider:
+            id: sl_light_1
+            align: TOP_MID
+            y: 58
+            width: 280
+            height: 16
+            min_value: 0
+            max_value: 100
+            value: 0
+            # Grey (= off) until the first resync sets the real colour.
+            indicator:
+              bg_color: 0x4B5563
+            # Sent on release, not on every value change during the drag; a
+            # programmatic update (resync) does not trigger on_release, so no
+            # echo guard is needed.
+            on_release:
+              then:
+                - homeassistant.action:
+                    action: light.turn_on
+                    data:
+                      entity_id: ${light_1_entity}
+                      brightness_pct: !lambda |-
+                        char b[8];
+                        snprintf(b, sizeof(b), "%d", (int) lv_slider_get_value(id(sl_light_1)));
+                        return std::string(b);
+        - slider:
+            id: sl_temp_1
+            align: TOP_MID
+            y: 82
+            width: 280
+            height: 16
+            min_value: 2000
+            max_value: 6500
+            value: 3000
+            indicator:
+              bg_color: 0x4B5563
+            on_release:
+              then:
+                - homeassistant.action:
+                    action: light.turn_on
+                    data:
+                      entity_id: ${light_1_entity}
+                      color_temp_kelvin: !lambda |-
+                        char b[8];
+                        snprintf(b, sizeof(b), "%d", (int) lv_slider_get_value(id(sl_temp_1)));
+                        return std::string(b);
+        - label: {align: TOP_LEFT, x: 14, y: 148, text_font: f_small, text_color: 0xFFFFFF, text: "${light_2_name}"}
+        - switch:
+            id: sw_light_2
+            align: TOP_RIGHT
+            x: -14
+            y: 144
+            on_value:
+              then:
+                - if:
+                    condition:
+                      lambda: 'return id(sync_sw_2);'
+                    then:
+                      - globals.set: {id: sync_sw_2, value: 'false'}
+                    else:
+                      - homeassistant.action:
+                          action: !lambda 'return x ? std::string("light.turn_on") : std::string("light.turn_off");'
+                          data:
+                            entity_id: ${light_2_entity}
+        - slider:
+            id: sl_light_2
+            align: TOP_MID
+            y: 172
+            width: 280
+            height: 16
+            min_value: 0
+            max_value: 100
+            value: 0
+            # Grey (= off) until the first resync sets the real colour.
+            indicator:
+              bg_color: 0x4B5563
+            # Sent on release, not on every value change during the drag; a
+            # programmatic update (resync) does not trigger on_release, so no
+            # echo guard is needed.
+            on_release:
+              then:
+                - homeassistant.action:
+                    action: light.turn_on
+                    data:
+                      entity_id: ${light_2_entity}
+                      brightness_pct: !lambda |-
+                        char b[8];
+                        snprintf(b, sizeof(b), "%d", (int) lv_slider_get_value(id(sl_light_2)));
+                        return std::string(b);
+        - slider:
+            id: sl_temp_2
+            align: TOP_MID
+            y: 196
+            width: 280
+            height: 16
+            min_value: 2000
+            max_value: 6500
+            value: 3000
+            indicator:
+              bg_color: 0x4B5563
+            on_release:
+              then:
+                - homeassistant.action:
+                    action: light.turn_on
+                    data:
+                      entity_id: ${light_2_entity}
+                      color_temp_kelvin: !lambda |-
+                        char b[8];
+                        snprintf(b, sizeof(b), "%d", (int) lv_slider_get_value(id(sl_temp_2)));
+                        return std::string(b);
+        - button:
+            align: BOTTOM_MID
+            y: -14
+            width: 200
+            height: 50
+            bg_color: 0x4B5563
+            radius: 10
+            widgets:
+              - label: {align: CENTER, text_font: f_med, text_color: 0xFFFFFF, text: "BACK"}
+            on_click:
+              - script.execute: goto_home
