@@ -1,0 +1,255 @@
+# Room thermometers: temperature, humidity and a trend arrow (vs. about an
+# hour ago) for three sensors, imported from Home Assistant. Thermometer 1 is
+# meant for the outdoor sensor: its temperature is also shown on the home
+# screen greeting line.
+#
+# Substitutions (name + entity ids of a temperature and a humidity sensor):
+#   thermo_1_name, thermo_1_temp, thermo_1_humidity   (default: outdoor)
+#   thermo_2_*, thermo_3_*
+#
+# Requires: core.yaml, ui/base.yaml
+substitutions:
+  thermo_1_name: "Outdoor"
+  thermo_1_temp: sensor.outdoor_temperature
+  thermo_1_humidity: sensor.outdoor_humidity
+  thermo_2_name: "Living room"
+  thermo_2_temp: sensor.living_room_temperature
+  thermo_2_humidity: sensor.living_room_humidity
+  thermo_3_name: "Office"
+  thermo_3_temp: sensor.office_temperature
+  thermo_3_humidity: sensor.office_humidity
+
+globals:
+  # Reference values for the trend arrows: no history buffer (a graph needs
+  # one), an arrow only needs "vs. about an hour ago". -999 means "not yet
+  # initialised" (a NaN sentinel invites comparison footguns); it takes the
+  # first reading, then an hourly interval rolls it forward.
+  - id: trend_ref_1
+    type: float
+    initial_value: '-999.0f'
+  - id: trend_ref_2
+    type: float
+    initial_value: '-999.0f'
+  - id: trend_ref_3
+    type: float
+    initial_value: '-999.0f'
+
+sensor:
+  - platform: homeassistant
+    id: temp_1
+    entity_id: ${thermo_1_temp}
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(home_outdoor_temp) = x;'
+        - script.execute: update_home_status
+        - lvgl.label.update:
+            id: lbl_thermo_1_temp
+            text: !lambda |-
+              char b[16];
+              snprintf(b, sizeof(b), "%.1f°C", x);
+              return std::string(b);
+        # One lambda for text and colour: both need the same arrow, and the
+        # first read would otherwise mutate trend_ref_1 before a second
+        # independent template saw it.
+        - lambda: |-
+            std::string arrow = "-";
+            uint32_t color = 0xFFFFFF;
+            if (id(trend_ref_1) > -900.0f) {
+              if (x > id(trend_ref_1) + 0.2f) { arrow = "^"; color = 0xDC2626; }
+              else if (x < id(trend_ref_1) - 0.2f) { arrow = "v"; color = 0x86EFAC; }
+            } else {
+              id(trend_ref_1) = x;
+            }
+            lv_label_set_text(id(lbl_thermo_1_trend), arrow.c_str());
+            lv_obj_set_style_text_color(id(lbl_thermo_1_trend), lv_color_hex(color), 0);
+  - platform: homeassistant
+    id: humid_1
+    entity_id: ${thermo_1_humidity}
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_thermo_1_humid
+            text: !lambda |-
+              char b[24];
+              snprintf(b, sizeof(b), "%.0f%% humidity", x);
+              return std::string(b);
+  - platform: homeassistant
+    id: temp_2
+    entity_id: ${thermo_2_temp}
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_thermo_2_temp
+            text: !lambda |-
+              char b[16];
+              snprintf(b, sizeof(b), "%.1f°C", x);
+              return std::string(b);
+        # One lambda for text and colour: both need the same arrow, and the
+        # first read would otherwise mutate trend_ref_2 before a second
+        # independent template saw it.
+        - lambda: |-
+            std::string arrow = "-";
+            uint32_t color = 0xFFFFFF;
+            if (id(trend_ref_2) > -900.0f) {
+              if (x > id(trend_ref_2) + 0.2f) { arrow = "^"; color = 0xDC2626; }
+              else if (x < id(trend_ref_2) - 0.2f) { arrow = "v"; color = 0x86EFAC; }
+            } else {
+              id(trend_ref_2) = x;
+            }
+            lv_label_set_text(id(lbl_thermo_2_trend), arrow.c_str());
+            lv_obj_set_style_text_color(id(lbl_thermo_2_trend), lv_color_hex(color), 0);
+  - platform: homeassistant
+    id: humid_2
+    entity_id: ${thermo_2_humidity}
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_thermo_2_humid
+            text: !lambda |-
+              char b[24];
+              snprintf(b, sizeof(b), "%.0f%% humidity", x);
+              return std::string(b);
+  - platform: homeassistant
+    id: temp_3
+    entity_id: ${thermo_3_temp}
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_thermo_3_temp
+            text: !lambda |-
+              char b[16];
+              snprintf(b, sizeof(b), "%.1f°C", x);
+              return std::string(b);
+        # One lambda for text and colour: both need the same arrow, and the
+        # first read would otherwise mutate trend_ref_3 before a second
+        # independent template saw it.
+        - lambda: |-
+            std::string arrow = "-";
+            uint32_t color = 0xFFFFFF;
+            if (id(trend_ref_3) > -900.0f) {
+              if (x > id(trend_ref_3) + 0.2f) { arrow = "^"; color = 0xDC2626; }
+              else if (x < id(trend_ref_3) - 0.2f) { arrow = "v"; color = 0x86EFAC; }
+            } else {
+              id(trend_ref_3) = x;
+            }
+            lv_label_set_text(id(lbl_thermo_3_trend), arrow.c_str());
+            lv_obj_set_style_text_color(id(lbl_thermo_3_trend), lv_color_hex(color), 0);
+  - platform: homeassistant
+    id: humid_3
+    entity_id: ${thermo_3_humidity}
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_thermo_3_humid
+            text: !lambda |-
+              char b[24];
+              snprintf(b, sizeof(b), "%.0f%% humidity", x);
+              return std::string(b);
+
+interval:
+  # Roll the trend references forward so the arrow means "vs. about an hour
+  # ago" rather than freezing at the first reading after boot.
+  - interval: 3600s
+    then:
+      - lambda: |-
+          if (id(temp_1).has_state()) id(trend_ref_1) = id(temp_1).state;
+          if (id(temp_2).has_state()) id(trend_ref_2) = id(temp_2).state;
+          if (id(temp_3).has_state()) id(trend_ref_3) = id(temp_3).state;
+
+script:
+  # Repaint from the values ESPHome already has cached (see ui/base.yaml).
+  - id: !extend refresh_ha_display
+    then:
+      - lvgl.label.update:
+          id: lbl_thermo_1_temp
+          text: !lambda |-
+            if (!id(temp_1).has_state()) return std::string("--°C");
+            char b[16];
+            snprintf(b, sizeof(b), "%.1f°C", id(temp_1).state);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_thermo_1_humid
+          text: !lambda |-
+            if (!id(humid_1).has_state()) return std::string("--% humidity");
+            char b[24];
+            snprintf(b, sizeof(b), "%.0f%% humidity", id(humid_1).state);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_thermo_2_temp
+          text: !lambda |-
+            if (!id(temp_2).has_state()) return std::string("--°C");
+            char b[16];
+            snprintf(b, sizeof(b), "%.1f°C", id(temp_2).state);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_thermo_2_humid
+          text: !lambda |-
+            if (!id(humid_2).has_state()) return std::string("--% humidity");
+            char b[24];
+            snprintf(b, sizeof(b), "%.0f%% humidity", id(humid_2).state);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_thermo_3_temp
+          text: !lambda |-
+            if (!id(temp_3).has_state()) return std::string("--°C");
+            char b[16];
+            snprintf(b, sizeof(b), "%.1f°C", id(temp_3).state);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_thermo_3_humid
+          text: !lambda |-
+            if (!id(humid_3).has_state()) return std::string("--% humidity");
+            char b[24];
+            snprintf(b, sizeof(b), "%.0f%% humidity", id(humid_3).state);
+            return std::string(b);
+
+lvgl:
+  pages:
+    - id: !extend home_page
+      widgets:
+        - button:
+            width: 148
+            height: 48
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "CLIMATE"}
+            on_click:
+              - lvgl.page.show: climate_page
+
+    # Values are pushed live from Home Assistant (on_value), not polled.
+    - id: climate_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        - label: {align: TOP_MID, y: 6, text_font: f_med, text_color: 0xFFFFFF, text: "Climate"}
+        - label: {align: TOP_LEFT, x: 14, y: 40, text_font: f_med, text_color: 0xFFFFFF, text: "${thermo_1_name}"}
+        - label: {id: lbl_thermo_1_temp, align: TOP_LEFT, x: 14, y: 64, text_font: f_med, text_color: 0x7DD3FC, text: "--°C"}
+        - label: {id: lbl_thermo_1_trend, align: TOP_LEFT, x: 100, y: 64, text_font: f_med, text_color: 0xFFFFFF, text: ""}
+        - label: {id: lbl_thermo_1_humid, align: TOP_LEFT, x: 150, y: 64, text_font: f_med, text_color: 0x9AA0B5, text: "--% humidity"}
+        - label: {align: TOP_LEFT, x: 14, y: 108, text_font: f_med, text_color: 0xFFFFFF, text: "${thermo_2_name}"}
+        - label: {id: lbl_thermo_2_temp, align: TOP_LEFT, x: 14, y: 132, text_font: f_med, text_color: 0x7DD3FC, text: "--°C"}
+        - label: {id: lbl_thermo_2_trend, align: TOP_LEFT, x: 100, y: 132, text_font: f_med, text_color: 0xFFFFFF, text: ""}
+        - label: {id: lbl_thermo_2_humid, align: TOP_LEFT, x: 150, y: 132, text_font: f_med, text_color: 0x9AA0B5, text: "--% humidity"}
+        - label: {align: TOP_LEFT, x: 14, y: 176, text_font: f_med, text_color: 0xFFFFFF, text: "${thermo_3_name}"}
+        - label: {id: lbl_thermo_3_temp, align: TOP_LEFT, x: 14, y: 200, text_font: f_med, text_color: 0x7DD3FC, text: "--°C"}
+        - label: {id: lbl_thermo_3_trend, align: TOP_LEFT, x: 100, y: 200, text_font: f_med, text_color: 0xFFFFFF, text: ""}
+        - label: {id: lbl_thermo_3_humid, align: TOP_LEFT, x: 150, y: 200, text_font: f_med, text_color: 0x9AA0B5, text: "--% humidity"}
+        - button:
+            align: BOTTOM_MID
+            y: -14
+            width: 200
+            height: 50
+            bg_color: 0x4B5563
+            radius: 10
+            widgets:
+              - label: {align: CENTER, text_font: f_med, text_color: 0xFFFFFF, text: "BACK"}
+            on_click:
+              - script.execute: goto_home

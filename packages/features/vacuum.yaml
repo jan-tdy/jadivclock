@@ -1,0 +1,143 @@
+# Robot vacuum page: status, current room, battery, cleaning progress and
+# pause/resume + return-to-dock buttons.
+#
+# Works with any Home Assistant `vacuum.*` entity. Status/room/battery/
+# progress come from separate sensor entities (the names depend on your vacuum
+# integration; unavailable ones just show "--").
+#
+# Requires: core.yaml, ui/base.yaml
+substitutions:
+  vacuum_entity: vacuum.robot
+  vacuum_status_entity: sensor.robot_vacuum_status
+  vacuum_room_entity: sensor.robot_vacuum_current_room
+  vacuum_battery_entity: sensor.robot_vacuum_battery
+  vacuum_progress_entity: sensor.robot_vacuum_clean_progress
+
+sensor:
+  - platform: homeassistant
+    id: vac_battery
+    entity_id: ${vacuum_battery_entity}
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_vac_battery
+            text: !lambda |-
+              char b[24];
+              snprintf(b, sizeof(b), "Battery: %.0f%%", x);
+              return std::string(b);
+  - platform: homeassistant
+    id: vac_progress
+    entity_id: ${vacuum_progress_entity}
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_vac_progress
+            text: !lambda |-
+              char b[24];
+              snprintf(b, sizeof(b), "Progress: %.0f%%", x);
+              return std::string(b);
+
+text_sensor:
+  - platform: homeassistant
+    id: vac_status
+    entity_id: ${vacuum_status_entity}
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update: {id: lbl_vac_status, text: !lambda 'return x;'}
+  - platform: homeassistant
+    id: vac_room
+    entity_id: ${vacuum_room_entity}
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update: {id: lbl_vac_room, text: !lambda 'return x;'}
+  # The vacuum entity's own raw state ("cleaning" / "paused" / "docked"): the
+  # pause/resume button reads it to decide which action to send and how to
+  # label itself.
+  - platform: homeassistant
+    id: vac_state
+    entity_id: ${vacuum_entity}
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_vac_toggle
+            text: !lambda 'return (x == "paused") ? std::string("RESUME") : std::string("PAUSE");'
+
+lvgl:
+  pages:
+    - id: !extend home_page
+      widgets:
+        - button:
+            width: 148
+            height: 48
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "VACUUM"}
+            on_click:
+              - lvgl.page.show: vacuum_page
+
+    - id: vacuum_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        - label: {align: TOP_MID, y: 6, text_font: f_med, text_color: 0xFFFFFF, text: "Vacuum"}
+        - label: {id: lbl_vac_status, align: TOP_LEFT, x: 14, y: 44, width: 290, long_mode: DOT, text_font: f_med, text_color: 0x86EFAC, text: "--"}
+        - label: {id: lbl_vac_room, align: TOP_LEFT, x: 14, y: 76, width: 290, long_mode: DOT, text_font: f_small, text_color: 0xFFFFFF, text: "--"}
+        - label: {id: lbl_vac_battery, align: TOP_LEFT, x: 14, y: 100, text_font: f_small, text_color: 0xFFFFFF, text: "Battery: --%"}
+        - label: {id: lbl_vac_progress, align: TOP_LEFT, x: 14, y: 124, text_font: f_small, text_color: 0xFFFFFF, text: "Progress: --%"}
+        - button:
+            align: TOP_LEFT
+            x: 14
+            y: 160
+            width: 140
+            height: 50
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {id: lbl_vac_toggle, align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "PAUSE"}
+            on_click:
+              - if:
+                  condition:
+                    lambda: 'return id(vac_state).state == "paused";'
+                  then:
+                    - homeassistant.action:
+                        action: vacuum.start
+                        data:
+                          entity_id: ${vacuum_entity}
+                  else:
+                    - homeassistant.action:
+                        action: vacuum.pause
+                        data:
+                          entity_id: ${vacuum_entity}
+        - button:
+            align: TOP_RIGHT
+            x: -14
+            y: 160
+            width: 140
+            height: 50
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "DOCK"}
+            on_click:
+              - homeassistant.action:
+                  action: vacuum.return_to_base
+                  data:
+                    entity_id: ${vacuum_entity}
+        - button:
+            align: BOTTOM_MID
+            y: -14
+            width: 200
+            height: 50
+            bg_color: 0x4B5563
+            radius: 10
+            widgets:
+              - label: {align: CENTER, text_font: f_med, text_color: 0xFFFFFF, text: "BACK"}
+            on_click:
+              - script.execute: goto_home
