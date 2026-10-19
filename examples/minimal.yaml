@@ -1,0 +1,13 @@
+# Example: just the clock, with weather.
+substitutions:
+  name: my-clock
+  friendly_name: My JadivClock
+  timezone: Europe/Berlin
+  weather_lat: "52.52"
+  weather_lon: "13.405"
+
+packages:
+  core: github://jan-tdy/jadivclock/packages/core.yaml@main
+  hw: github://jan-tdy/jadivclock/packages/hw/crowpanel_35.yaml@main
+  ui: github://jan-tdy/jadivclock/packages/ui/base.yaml@main
+  weather: github://jan-tdy/jadivclock/packages/features/weather.yaml@main

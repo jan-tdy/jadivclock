@@ -1,38 +1,62 @@
 # JadivClock
 
-A touch-screen smart-home panel firmware for ESPHome, originally built for the
-Elecrow CrowPanel Advance 3.5" (ESP32-S3, ILI9488 SPI display, GT911 touch).
+A touch-screen smart-home panel firmware for [ESPHome](https://esphome.io),
+built for the Elecrow CrowPanel Advance 3.5" (ESP32-S3, ILI9488 SPI display,
+GT911 touch). You compose it from small packages and configure it with
+substitutions - there is no code to edit.
 
-> **Status: pre-release / work in progress.** This repository is being
-> extracted from a personal single-file configuration. See
-> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the package layout and the
-> extraction checklist.
+> **Status: pre-release.** The packages validate with `esphome config` and
+> compile with ESPHome 2026.9.1. Not every feature has been verified on a
+> fresh install yet - see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
+> please open an issue if something misbehaves.
 
-## Features (planned as optional packages)
+## Features (each one an optional package)
 
-- Dashboard and phone (portrait) UI modes with auto-return to home screen
-- Weather (Open-Meteo, no API key): current, 12-hour and 6-day forecast
-- Todoist agenda (complete / reschedule tasks) plus next Home Assistant calendar event
-- Home Assistant lights (brightness + colour temperature), room thermometers with trends
-- Robot vacuum widget (pause / resume / dock)
-- Quick-message code grid ("Communication") pressing Home Assistant `input_button`s
-- Send / receive broadcasts and yes/no questions between panels (Home Assistant `text` entities)
-- Buzzer, backlight control, Home Assistant exposed settings
+- Home screen with clock, date and a greeting; landscape or portrait, with
+  auto-return to the home screen
+- **Weather** - Open-Meteo, no API key: current, next 12 hours, 6 days
+- **Todoist agenda** - complete and reschedule tasks, optionally with the next Home
+  Assistant calendar event
+- **Lights** - Home Assistant lights with brightness and colour temperature
+- **Thermometers** - temperature, humidity and trend arrows
+- **Vacuum** - robot vacuum status, pause/resume, dock
+- **Broadcast** - receive popups from Home Assistant; send messages and
+  questions (with an answer) to another panel
+- Buzzer, backlight control, on-device settings
 
-Attendance (punch in/out) is intentionally **not** part of the open-source release.
-
-## Usage (target design)
+## Quick start
 
 ```yaml
 substitutions:
   name: my-clock
   friendly_name: My JadivClock
+  timezone: Europe/Berlin
+  weather_lat: "52.52"
+  weather_lon: "13.405"
 
 packages:
-  core: github://<owner>/jadivclock/packages/core.yaml@main
-  hw: github://<owner>/jadivclock/packages/hw/crowpanel_35.yaml@main
-  weather: github://<owner>/jadivclock/packages/features/weather.yaml@main
+  core: github://jan-tdy/jadivclock/packages/core.yaml@main
+  hw: github://jan-tdy/jadivclock/packages/hw/crowpanel_35.yaml@main
+  ui: github://jan-tdy/jadivclock/packages/ui/base.yaml@main
+  weather: github://jan-tdy/jadivclock/packages/features/weather.yaml@main
 ```
+
+Add the other features the same way. Full walk-through:
+[docs/getting-started.md](docs/getting-started.md). Examples:
+[examples/minimal.yaml](examples/minimal.yaml),
+[examples/full.yaml](examples/full.yaml).
+
+## Documentation
+
+- [Getting started](docs/getting-started.md)
+- [Architecture and design](docs/ARCHITECTURE.md)
+- [Hardware: CrowPanel Advance 3.5"](docs/hardware-crowpanel-35.md)
+- Features: [weather](docs/features/weather.md),
+  [todoist](docs/features/todoist.md), [lights](docs/features/lights.md),
+  [thermometers](docs/features/thermometers.md),
+  [vacuum](docs/features/vacuum.md),
+  [broadcast](docs/features/broadcast.md)
+- [Home Assistant side of broadcast and questions](docs/home-assistant.md)
 
 ## License
 

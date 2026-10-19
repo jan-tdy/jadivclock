@@ -1,88 +1,96 @@
-# Architecture & extraction plan
+# Architecture
 
-## Decisions (2026-10-19)
-
-| Topic | Decision |
-|---|---|
-| Scope | Firmware without attendance (Firebase / JapySoft backend stays private) |
-| Hardware, first release | CrowPanel Advance 3.5" only; 2.4" and 4.3" later as extra `hw/` packages |
-| License | MIT |
-| UI language | English only (Slovak strings translated during extraction) |
-| Repo | Brand-new repository, **do not reuse** `/home/pi/esphome` git history |
-
-## Why a new repo
-
-The existing `/home/pi/esphome` history never contained `secrets.yaml`
-(verified: 0 commits touch it), but it holds 257 commits of private device
-configs and personal entity names. A clean repo avoids leaking any of it.
-
-## Package layout
+JadivClock is a set of [ESPHome packages](https://esphome.io/components/packages/).
+You pick the hardware package, the UI and the features you want; your own
+config only holds substitutions (names, entity ids, coordinates) and a
+`packages:` list.
 
 ```
 packages/
-  core.yaml                 wifi, api, ota, time/sntp, globals shared by all
-  hw/crowpanel_35.yaml      spi, display, touch, backlight, buzzer, rtc, i2c, esp32 sdkconfig
-  ui/base.yaml              lvgl: block, fonts, theme, home pages, settings, idle auto-return
+  core.yaml                 identity, wifi, api, ota, sntp, http_request, diagnostics
+  hw/
+    crowpanel_35.yaml       ESP32-S3, ILI9488, GT911, RTC, backlight, buzzer, LVGL display
+  ui/
+    base.yaml               fonts, boot screen, home screen, settings, loading dialog
   features/
-    weather.yaml            Open-Meteo page + fetch script
-    todoist.yaml            agenda page, complete/reschedule, optional calendar row
-    lights.yaml             lights page + resync scripts
-    thermometers.yaml       smart page: room temps/humidity + trend arrows
-    vacuum.yaml             vacuum widget
-    communication.yaml      code grid + confirm / value dialogs
-    broadcast.yaml          incoming popup + composer + question/answer
+    weather.yaml            Open-Meteo page
+    todoist.yaml            agenda page
+    todoist_calendar.yaml   adds the next HA calendar event to the agenda
+    lights.yaml             two Home Assistant lights
+    thermometers.yaml       three temperature/humidity sensors with trend arrows
+    vacuum.yaml             robot vacuum page
+    broadcast.yaml          incoming message popup
+    broadcast_send.yaml     composer + question/answer to another panel
 ```
 
-Open design questions to prove with a small spike before the full split:
+## How packages combine
 
-1. **LVGL pages across packages.** ESPHome merges lists of dicts by `id:`, so a
-   feature package can contribute a `pages:` entry. The *home-screen tiles* that
-   link to those pages need the same treatment: tiles must live in each feature
-   package and be appended to a flex-wrap container (fixed grid cells will not
-   work for optional features).
-2. **Conditional UI.** Cross-page references (`lvgl.page.show: weather_page`)
-   break if a package is not included, so every link must live inside the
-   package that owns its target page.
-3. **ESPHome version pin.** Remote packages should be documented with a tested
-   minimum ESPHome version (LVGL 9.5.0 API, `lvgl.display.set_rotation`).
+* Lists are concatenated and dictionaries merged by ESPHome. Items of an
+  existing list that has to be *extended* (a page, a script) use `!extend`:
 
-## Things that must become substitutions / user config
+  ```yaml
+  lvgl:
+    pages:
+      - id: !extend home_page   # add a tile to the home screen
+        widgets:
+          - button: ...
+  ```
 
-Everything personal found in `jadivclock35-p02.yaml` (4441 lines, ~60 unique HA
-entity IDs hard-coded). Defaults go in each feature package, users override.
+  This is why every UI feature requires `ui/base.yaml`: it owns `home_page`
+  and the shared scripts (`goto_home`, `hide_loading_delayed`,
+  `refresh_ha_display`, ...). Plain `pages:` entries with an `id` are *not*
+  merged by ESPHome - a duplicate id is an error - so always use `!extend`.
+* The home screen is a wrapping flex container. Each feature appends one tile
+  after the header, so any combination of features fits and the same tiles
+  reflow between landscape (3 per row) and portrait (2 per row). Up to 9 tiles
+  fit in landscape.
+* A link to a page lives in the package that owns the page, so a feature that is
+  not included can never leave a dangling `lvgl.page.show:`.
+* Dialogs and overlays are appended to `lvgl: top_layer: widgets:`.
+* Features that need to react to Home Assistant reconnecting add steps to
+  `api: on_client_connected: then:`.
+* Features that cache state (lights, thermometers) extend `refresh_ha_display`,
+  the script behind the *Refresh HA* button on the settings page.
+* `todoist_calendar.yaml` writes into globals declared by `todoist.yaml`
+  (`todo_cal_*`), so the Todoist code does not depend on the calendar
+  package being present.
 
-- Device identity: `name`, `friendly_name`, `emp_id`, `emp_label`, `att_zona` (attendance only, dropped)
-- Location: `weather_lat`, `weather_lon` (currently Piconcillo)
-- Lights: `light.svetla_jedalen`, `light.svetlo_pracovna` (+ room names)
-- Thermometers: `sensor.teplomer_{vonku,jedalen,pracovna}_{temperature,humidity}`
-- Vacuum: `vacuum.jedalen_rv30_max`, `sensor.jedalen_rv30_max_battery`,
-  `sensor.podlazie_0_rv30_max_{status,current_room,clean_progress}`
-- Calendar: `calendar.janik`
-- Communication: `input_button.kod_*` (30 codes), `input_number.hodnota_hlad_332`,
-  `input_number.hodnota_teplota`, `input_select.hlasenie_kto`,
-  `input_select.hodnota_pavol_nalada` and the code labels/colours themselves.
-  These belong to a private family "DevControl" scheme: ship them as an
-  **example code table** users replace, not as built-in behaviour.
-- Broadcast: `text.jadivclock4_3_jedalen_jadivclock_broadcast`,
-  `text.podlazie_0_..._question`, `..._question_answer`
-- Secrets: `wifi_*`, `jclock430001__{encryption_key,ota_password}`, `todoist_token`
-  (rename to generic `api_encryption_key`, `ota_password`, ...)
-- Dropped entirely: `firebase_url`, `firebase_secret`, punch / attendance pages,
-  history list, `refresh_status`, `last_punch_*` globals, attendance dialogs.
+## Hardware contract
 
-## Extraction checklist
+A `hw/` package must provide: `my_display`, `my_touch`, `backlight` (a light),
+`buzzer_pwm` (an output), a script `beep` (parameter `count`), the global
+`buzzer_muted`, and the `lvgl:` display/touchscreen settings. `rtc_time` is
+optional. See [hardware-crowpanel-35.md](hardware-crowpanel-35.md).
 
-- [ ] Fill in the copyright holder in `LICENSE`
-- [ ] Spike: core + hw + ui/base + one feature package compiles on the device
-- [ ] Remove attendance code paths and everything that references them
-- [ ] Translate Slovak UI text to English (fonts: glyph lists can shrink)
-- [ ] Convert hard-coded entity IDs to substitutions with neutral defaults
-- [ ] Split `lvgl:` pages / top_layer dialogs into feature packages
-- [ ] `docs/` pages per feature + wiring photo for the CrowPanel
-- [ ] Final scan for secrets, personal names, e-mails, IPs, URLs before the first push
-- [ ] Tag a release; test `github://` remote packages from a clean ESPHome install
+## UI modes
 
-## Tooling note
+The panel is natively portrait (320x480). `ui_mode` (restored from flash) is
+either `phone` (portrait, rotation 0) or `dashboard` (landscape 480x320,
+`lvgl.display.set_rotation: 270`). In dashboard mode the panel returns to the
+home screen after 20 seconds without touch. Swipe down on the home screen in
+dashboard mode to switch to portrait; in portrait it opens the quick settings
+drawer.
 
-No ESPHome install was available in the working environment (PyPI blocked by the
-sandbox), so nothing here has been compiled or `esphome config`-validated yet.
+## Known constraints
+
+* `http_request` is synchronous: a script that calls it shows a loading dialog,
+  waits `100ms` so LVGL can draw it, and only then does the blocking request.
+* LVGL `buffer_size: 25%` is the best responsiveness/ghosting trade-off on the
+  ILI9488.
+* The main task stack is raised to 16 KiB; the JSON parsing in the Todoist and
+  weather callbacks needs it.
+* Avoid `bg_opa` alpha blending: with inverted colours and BGR order on this
+  panel it renders wrong colours. Use solid colours.
+* A Roboto `glyphs:` list *replaces* the default set, so it must contain full
+  ASCII. `font_extra_glyphs` appends to it.
+* Shapes with a full-circle radius rendered corrupted on this display; the
+  weather icons use rounded squares instead.
+
+## Tested with
+
+ESPHome 2026.9.1 (LVGL 9.5, `lvgl.display.set_rotation`). CI validates
+`tests/full.yaml` and `tests/minimal.yaml` with `esphome config`.
+
+## Roadmap
+
+* `hw/crowpanel_24.yaml` and `hw/crowpanel_43.yaml` (2.4" / 4.3" panels)
