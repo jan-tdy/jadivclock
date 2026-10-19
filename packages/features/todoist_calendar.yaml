@@ -1,0 +1,35 @@
+# Adds the next Home Assistant calendar event as a row in the Todoist agenda.
+#
+# Home Assistant's calendar entity exposes only ONE event (the next or
+# currently active one) in its state attributes, so this is a single "next
+# event" row, not a multi-day agenda.
+#
+# Requires: features/todoist.yaml
+substitutions:
+  calendar_entity: calendar.my_calendar
+
+text_sensor:
+  - platform: homeassistant
+    id: cal_message
+    entity_id: ${calendar_entity}
+    attribute: message
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(todo_cal_message) = x;'
+  - platform: homeassistant
+    id: cal_start
+    entity_id: ${calendar_entity}
+    attribute: start_time
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(todo_cal_start) = x;'
+  - platform: homeassistant
+    id: cal_allday
+    entity_id: ${calendar_entity}
+    attribute: all_day
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(todo_cal_allday) = x;'

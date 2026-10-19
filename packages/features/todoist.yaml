@@ -1,0 +1,651 @@
+# Todoist agenda: today's tasks (plus overdue), complete with a checkbox,
+# reschedule to the next quarter hour with NOW. Optionally also shows the next
+# Home Assistant calendar event in the same list (see todoist_calendar.yaml).
+#
+# Needs a Todoist API token in secrets.yaml as `todoist_token`
+# (Todoist > Settings > Integrations > Developer).
+#
+# Requires: core.yaml, ui/base.yaml
+substitutions:
+  todoist_token: !secret todoist_token
+
+globals:
+  # One slot per visible row: text, Todoist task id, recurring flag, and whether
+  # the slot holds the calendar event instead of a task.
+  - id: todo_1
+    type: std::string
+    initial_value: '""'
+  - id: todo_2
+    type: std::string
+    initial_value: '""'
+  - id: todo_3
+    type: std::string
+    initial_value: '""'
+  - id: todo_4
+    type: std::string
+    initial_value: '""'
+  - id: todo_5
+    type: std::string
+    initial_value: '""'
+  - id: todo_6
+    type: std::string
+    initial_value: '""'
+  - id: todo_id_1
+    type: std::string
+    initial_value: '""'
+  - id: todo_id_2
+    type: std::string
+    initial_value: '""'
+  - id: todo_id_3
+    type: std::string
+    initial_value: '""'
+  - id: todo_id_4
+    type: std::string
+    initial_value: '""'
+  - id: todo_id_5
+    type: std::string
+    initial_value: '""'
+  - id: todo_id_6
+    type: std::string
+    initial_value: '""'
+  - id: todo_recurring_1
+    type: bool
+    initial_value: 'false'
+  - id: todo_recurring_2
+    type: bool
+    initial_value: 'false'
+  - id: todo_recurring_3
+    type: bool
+    initial_value: 'false'
+  - id: todo_recurring_4
+    type: bool
+    initial_value: 'false'
+  - id: todo_recurring_5
+    type: bool
+    initial_value: 'false'
+  - id: todo_recurring_6
+    type: bool
+    initial_value: 'false'
+  - id: todo_iscal_1
+    type: bool
+    initial_value: 'false'
+  - id: todo_iscal_2
+    type: bool
+    initial_value: 'false'
+  - id: todo_iscal_3
+    type: bool
+    initial_value: 'false'
+  - id: todo_iscal_4
+    type: bool
+    initial_value: 'false'
+  - id: todo_iscal_5
+    type: bool
+    initial_value: 'false'
+  - id: todo_iscal_6
+    type: bool
+    initial_value: 'false'
+  # Runtime-selectable Todoist filter query (URL-encoded). "me" is resolved by
+  # Todoist from the API token itself. A plain "today" would drop a timed task
+  # the moment its due time passes, so the default combines it with overdue.
+  - id: todo_filter
+    type: std::string
+    initial_value: '"%28today%20%7C%20overdue%29%20%26%20assigned%20to%3A%20me"'
+  # Next calendar event, written by todoist_calendar.yaml when it is included.
+  - id: todo_cal_message
+    type: std::string
+    initial_value: '""'
+  - id: todo_cal_start
+    type: std::string
+    initial_value: '""'
+  - id: todo_cal_allday
+    type: std::string
+    initial_value: '""'
+
+script:
+  - id: fetch_todos
+    then:
+      - lvgl.widget.show: loading_dialog
+      - script.execute: hide_loading_delayed
+      # http_request is synchronous: without this delay LVGL never gets to flush
+      # the "loading" frame before the blocking call starts.
+      - delay: 100ms
+      - http_request.get:
+          url: !lambda |-
+            return "https://api.todoist.com/api/v1/tasks/filter?query=" + id(todo_filter);
+          request_headers:
+            Authorization: "Bearer ${todoist_token}"
+          capture_response: true
+          max_response_buffer_size: 16kB
+          on_response:
+            then:
+              - lambda: |-
+                  ESP_LOGD("todo", "status=%d len=%d", response->status_code, (int) body.size());
+                  // Todoist priority is inverted from the UI: API 4 = UI "P1".
+                  struct TaskInfo {
+                    std::string sort_key;
+                    std::string label;
+                    std::string task_id;
+                    bool is_recurring;
+                    bool is_calendar;
+                  };
+                  // All-day tasks are only shown as filler when there are
+                  // fewer than 2 timed tasks.
+                  std::vector<TaskInfo> timed_tasks;
+                  std::vector<TaskInfo> allday_tasks;
+                  auto doc = json::parse_json(body);
+                  JsonArray results = doc["results"];
+                  if (!doc.isNull() && !results.isNull()) {
+                    for (JsonObject t : results) {
+                      JsonObject due = t["due"];
+                      if (due.isNull()) continue;
+                      const char *content = t["content"];
+                      if (content == nullptr) continue;
+                      const char *tid = t["id"];
+                      std::string task_id = tid == nullptr ? "" : std::string(tid);
+
+                      // due.datetime is null for tasks set the normal way (app /
+                      // due_string); when a task has a time, the full
+                      // "YYYY-MM-DDTHH:MM:SS" shows up in due.date, already in
+                      // local time. A task set via due_datetime (the NOW button)
+                      // instead has due.datetime populated, in UTC. dt_is_utc
+                      // tracks which case this is so the digits get converted.
+                      const char *dt = due["datetime"];
+                      const char *dd = due["date"];
+                      bool dt_is_utc = (dt != nullptr && strlen(dt) >= 16);
+                      if (!dt_is_utc) {
+                        dt = (dd != nullptr && strlen(dd) >= 16 && dd[10] == 'T') ? dd : nullptr;
+                      }
+                      ESP_LOGD("todo", "task=\"%s\" resolved_dt=%s utc=%d", content, dt == nullptr ? "(null)" : dt, (int) dt_is_utc);
+                      // Rescheduling via due_datetime strips a recurrence rule,
+                      // so the NOW button is not offered on recurring tasks.
+                      bool is_recurring = due["is_recurring"] | false;
+
+                      int prio = t["priority"] | 1;
+                      int ui_prio = 5 - prio;
+                      if (ui_prio < 1) ui_prio = 1;
+                      if (ui_prio > 4) ui_prio = 4;
+                      // LVGL recolor markup (#RRGGBB text#); the labels set
+                      // recolor: true. P1 red, P2 orange, P3 blue, P4 white.
+                      const char *prio_hex[5] = {"", "ff3b30", "ff9500", "5ac8fa", "ffffff"};
+
+                      if (dt != nullptr) {
+                        std::string sort_key = dt;
+                        struct tm dtm = {};
+                        dtm.tm_year = (dt[0] - '0') * 1000 + (dt[1] - '0') * 100 + (dt[2] - '0') * 10 + (dt[3] - '0') - 1900;
+                        dtm.tm_mon = (dt[5] - '0') * 10 + (dt[6] - '0') - 1;
+                        dtm.tm_mday = (dt[8] - '0') * 10 + (dt[9] - '0');
+                        dtm.tm_hour = (dt[11] - '0') * 10 + (dt[12] - '0');
+                        dtm.tm_min = (dt[14] - '0') * 10 + (dt[15] - '0');
+                        if (dt_is_utc) {
+                          // timegm() is not available in this ESP-IDF newlib
+                          // build, so UTC fields -> epoch uses Howard Hinnant's
+                          // days_from_civil instead.
+                          auto to_utc_epoch = [](int y, int mo, int d, int h, int mi, int s) -> time_t {
+                            y -= mo <= 2;
+                            long era = (y >= 0 ? y : y - 399) / 400;
+                            unsigned yoe = (unsigned) (y - era * 400);
+                            unsigned doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+                            unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+                            long days = era * 146097 + (long) doe - 719468;
+                            return (time_t) days * 86400 + h * 3600 + mi * 60 + s;
+                          };
+                          // Derive the current local-vs-UTC offset from sntp_time
+                          // instead of hardcoding it, so DST is handled.
+                          auto now_local = id(sntp_time).now();
+                          time_t now_as_utc_epoch = to_utc_epoch(now_local.year, now_local.month, now_local.day_of_month,
+                                                                  now_local.hour, now_local.minute, now_local.second);
+                          time_t tz_offset = now_as_utc_epoch - now_local.timestamp;
+                          time_t task_as_utc_epoch = to_utc_epoch(dtm.tm_year + 1900, dtm.tm_mon + 1, dtm.tm_mday,
+                                                                   dtm.tm_hour, dtm.tm_min, 0);
+                          time_t shifted = task_as_utc_epoch + tz_offset;
+                          gmtime_r(&shifted, &dtm);
+                          char norm[20];
+                          strftime(norm, sizeof(norm), "%Y-%m-%dT%H:%M:%S", &dtm);
+                          sort_key = norm;
+                        }
+                        char start_hm[6];
+                        snprintf(start_hm, sizeof(start_hm), "%02d:%02d", dtm.tm_hour, dtm.tm_min);
+                        std::string time_label = start_hm;
+                        JsonObject dur = t["duration"];
+                        const char *unit = dur.isNull() ? nullptr : (const char *) dur["unit"];
+                        int amount = dur.isNull() ? 0 : (int) (dur["amount"] | 0);
+                        if (unit != nullptr && strcmp(unit, "minute") == 0 && amount > 0) {
+                          int total = dtm.tm_hour * 60 + dtm.tm_min + amount;
+                          char b[16];
+                          snprintf(b, sizeof(b), "%s-%02d:%02d", start_hm, (total / 60) % 24, total % 60);
+                          time_label = b;
+                        }
+                        char b[96];
+                        snprintf(b, sizeof(b), "#%s %s P%d %s#", prio_hex[ui_prio], time_label.c_str(), ui_prio, content);
+                        timed_tasks.push_back(TaskInfo{sort_key, std::string(b), task_id, is_recurring, false});
+                      } else if (dd != nullptr) {
+                        char b[96];
+                        snprintf(b, sizeof(b), "#%s all day P%d %s#", prio_hex[ui_prio], ui_prio, content);
+                        allday_tasks.push_back(TaskInfo{std::string(dd), std::string(b), task_id, is_recurring, false});
+                      }
+                      if (timed_tasks.size() + allday_tasks.size() >= 50) break;
+                    }
+                  }
+                  // Next calendar event (written by todoist_calendar.yaml, empty
+                  // otherwise), injected into the same sortable list so it lands
+                  // in its chronological slot. HA exposes only the single
+                  // next/current event, so at most one row.
+                  std::string cal_msg = id(todo_cal_message);
+                  std::string cal_start = id(todo_cal_start);
+                  std::string cal_allday = id(todo_cal_allday);
+                  if (!cal_msg.empty() && cal_start.size() >= 19) {
+                    // HA formats start_time as "YYYY-MM-DD HH:MM:SS" (local).
+                    // Swap the space for 'T' to compare against Todoist's keys.
+                    std::string sort_key = cal_start;
+                    sort_key[10] = 'T';
+                    char b[160];
+                    if (cal_allday == "True") {
+                      snprintf(b, sizeof(b), "#a78bfa all day CAL: %s#", cal_msg.c_str());
+                      allday_tasks.push_back(TaskInfo{sort_key.substr(0, 10), std::string(b), std::string("__cal__"), false, true});
+                    } else {
+                      char hm[6];
+                      snprintf(hm, sizeof(hm), "%.2s:%.2s", cal_start.c_str() + 11, cal_start.c_str() + 14);
+                      snprintf(b, sizeof(b), "#a78bfa %s CAL: %s#", hm, cal_msg.c_str());
+                      timed_tasks.push_back(TaskInfo{sort_key, std::string(b), std::string("__cal__"), false, true});
+                    }
+                  }
+                  auto by_key = [](const TaskInfo &a, const TaskInfo &b) { return a.sort_key < b.sort_key; };
+                  std::sort(timed_tasks.begin(), timed_tasks.end(), by_key);
+                  std::sort(allday_tasks.begin(), allday_tasks.end(), by_key);
+                  std::string lines[6] = {"", "", "", "", "", ""};
+                  std::string ids[6] = {"", "", "", "", "", ""};
+                  bool recurring[6] = {false, false, false, false, false, false};
+                  bool iscal[6] = {false, false, false, false, false, false};
+                  size_t i = 0;
+                  for (size_t j = 0; j < timed_tasks.size() && i < 6; j++) {
+                    lines[i] = timed_tasks[j].label;
+                    ids[i] = timed_tasks[j].task_id;
+                    recurring[i] = timed_tasks[j].is_recurring;
+                    iscal[i] = timed_tasks[j].is_calendar;
+                    i++;
+                  }
+                  if (timed_tasks.size() < 2) {
+                    for (size_t j = 0; j < allday_tasks.size() && i < 6; j++) {
+                      lines[i] = allday_tasks[j].label;
+                      ids[i] = allday_tasks[j].task_id;
+                      recurring[i] = allday_tasks[j].is_recurring;
+                      iscal[i] = allday_tasks[j].is_calendar;
+                      i++;
+                    }
+                  }
+                  id(todo_1) = lines[0]; id(todo_id_1) = ids[0]; id(todo_recurring_1) = recurring[0]; id(todo_iscal_1) = iscal[0];
+                  id(todo_2) = lines[1]; id(todo_id_2) = ids[1]; id(todo_recurring_2) = recurring[1]; id(todo_iscal_2) = iscal[1];
+                  id(todo_3) = lines[2]; id(todo_id_3) = ids[2]; id(todo_recurring_3) = recurring[2]; id(todo_iscal_3) = iscal[2];
+                  id(todo_4) = lines[3]; id(todo_id_4) = ids[3]; id(todo_recurring_4) = recurring[3]; id(todo_iscal_4) = iscal[3];
+                  id(todo_5) = lines[4]; id(todo_id_5) = ids[4]; id(todo_recurring_5) = recurring[4]; id(todo_iscal_5) = iscal[4];
+                  id(todo_6) = lines[5]; id(todo_id_6) = ids[5]; id(todo_recurring_6) = recurring[5]; id(todo_iscal_6) = iscal[5];
+              - lvgl.label.update: {id: lbl_todo_1, text: !lambda 'return id(todo_1);'}
+              - lvgl.label.update: {id: lbl_todo_2, text: !lambda 'return id(todo_2);'}
+              - lvgl.label.update: {id: lbl_todo_3, text: !lambda 'return id(todo_3);'}
+              - lvgl.label.update: {id: lbl_todo_4, text: !lambda 'return id(todo_4);'}
+              - lvgl.label.update: {id: lbl_todo_5, text: !lambda 'return id(todo_5);'}
+              - lvgl.label.update: {id: lbl_todo_6, text: !lambda 'return id(todo_6);'}
+              # Fresh fetch: every row starts unchecked, and a slot with no task
+              # hides its whole row.
+              - lvgl.widget.update: {id: chk_todo_1, state: {checked: false}}
+              - lvgl.widget.update: {id: chk_todo_2, state: {checked: false}}
+              - lvgl.widget.update: {id: chk_todo_3, state: {checked: false}}
+              - lvgl.widget.update: {id: chk_todo_4, state: {checked: false}}
+              - lvgl.widget.update: {id: chk_todo_5, state: {checked: false}}
+              - lvgl.widget.update: {id: chk_todo_6, state: {checked: false}}
+              - lambda: |-
+                  bool vis[6] = {!id(todo_1).empty(), !id(todo_2).empty(), !id(todo_3).empty(),
+                                 !id(todo_4).empty(), !id(todo_5).empty(), !id(todo_6).empty()};
+                  lv_obj_t *rows[6] = {id(row_todo_1), id(row_todo_2), id(row_todo_3),
+                                       id(row_todo_4), id(row_todo_5), id(row_todo_6)};
+                  for (int k = 0; k < 6; k++) {
+                    if (vis[k]) lv_obj_clear_flag(rows[k], LV_OBJ_FLAG_HIDDEN);
+                    else lv_obj_add_flag(rows[k], LV_OBJ_FLAG_HIDDEN);
+                  }
+                  // NOW is hidden for recurring tasks (rescheduling strips the
+                  // recurrence) and, with the checkbox, for a calendar row
+                  // (there is no Todoist task underneath).
+                  bool rec[6] = {id(todo_recurring_1), id(todo_recurring_2), id(todo_recurring_3),
+                                 id(todo_recurring_4), id(todo_recurring_5), id(todo_recurring_6)};
+                  bool cal[6] = {id(todo_iscal_1), id(todo_iscal_2), id(todo_iscal_3),
+                                 id(todo_iscal_4), id(todo_iscal_5), id(todo_iscal_6)};
+                  lv_obj_t *now_btns[6] = {id(btn_now_1), id(btn_now_2), id(btn_now_3),
+                                           id(btn_now_4), id(btn_now_5), id(btn_now_6)};
+                  lv_obj_t *checkboxes[6] = {id(chk_todo_1), id(chk_todo_2), id(chk_todo_3),
+                                             id(chk_todo_4), id(chk_todo_5), id(chk_todo_6)};
+                  for (int k = 0; k < 6; k++) {
+                    if (rec[k] || cal[k]) lv_obj_add_flag(now_btns[k], LV_OBJ_FLAG_HIDDEN);
+                    else lv_obj_clear_flag(now_btns[k], LV_OBJ_FLAG_HIDDEN);
+                    if (cal[k]) lv_obj_add_flag(checkboxes[k], LV_OBJ_FLAG_HIDDEN);
+                    else lv_obj_clear_flag(checkboxes[k], LV_OBJ_FLAG_HIDDEN);
+                  }
+              - lvgl.widget.hide: loading_dialog
+          on_error:
+            then:
+              - lvgl.widget.hide: loading_dialog
+
+  # Marks a task done via Todoist's close endpoint, then re-fetches the list
+  # (on success or failure) rather than removing the row locally: the refetch
+  # is the only way to show what is actually true server-side.
+  - id: complete_todo
+    parameters:
+      task_id: std::string
+    then:
+      - if:
+          condition:
+            lambda: 'return !task_id.empty();'
+          then:
+            - lvgl.widget.show: loading_dialog
+            - script.execute: hide_loading_delayed
+            - delay: 100ms
+            - http_request.post:
+                url: !lambda 'return "https://api.todoist.com/api/v1/tasks/" + task_id + "/close";'
+                request_headers:
+                  Authorization: "Bearer ${todoist_token}"
+                capture_response: true
+                max_response_buffer_size: 1kB
+                on_response:
+                  then:
+                    - script.execute: fetch_todos
+                    - lvgl.widget.hide: loading_dialog
+                on_error:
+                  then:
+                    - script.execute: fetch_todos
+                    - lvgl.widget.hide: loading_dialog
+
+  # NOW: reschedule a task to the next round quarter hour (:00/:15/:30/:45).
+  # Only due_datetime is sent, so an existing duration is left alone (POST
+  # /tasks/{id} is a partial update). Rounding is done in epoch seconds (UTC):
+  # since every time zone offset is a whole number of quarter hours, a UTC
+  # quarter-hour boundary is a local one too.
+  - id: reschedule_todo_now
+    parameters:
+      task_id: std::string
+    then:
+      - if:
+          condition:
+            lambda: 'return !task_id.empty();'
+          then:
+            - lvgl.widget.show: loading_dialog
+            - script.execute: hide_loading_delayed
+            - delay: 100ms
+            - http_request.post:
+                url: !lambda 'return "https://api.todoist.com/api/v1/tasks/" + task_id;'
+                request_headers:
+                  Authorization: "Bearer ${todoist_token}"
+                  Content-Type: "application/json"
+                body: !lambda |-
+                  time_t epoch = id(sntp_time).now().timestamp;
+                  time_t rounded = ((epoch + 899) / 900) * 900;
+                  struct tm tm_utc;
+                  gmtime_r(&rounded, &tm_utc);
+                  char buf[24];
+                  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+                  std::string b = std::string("{\"due_datetime\":\"") + buf + "\"}";
+                  return b;
+                capture_response: true
+                max_response_buffer_size: 1kB
+                on_response:
+                  then:
+                    - script.execute: fetch_todos
+                    - lvgl.widget.hide: loading_dialog
+                on_error:
+                  then:
+                    - script.execute: fetch_todos
+                    - lvgl.widget.hide: loading_dialog
+
+interval:
+  - interval: 1s
+    then:
+      - lvgl.label.update:
+          id: lbl_todo_clock
+          text: !lambda |-
+            auto t = id(sntp_time).now();
+            if (!t.is_valid()) return std::string("--:--");
+            char b[6];
+            snprintf(b, sizeof(b), "%02d:%02d", t.hour, t.minute);
+            return std::string(b);
+
+lvgl:
+  pages:
+    - id: !extend home_page
+      widgets:
+        - button:
+            width: 148
+            height: 48
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "AGENDA"}
+            on_click:
+              - lvgl.page.show: todo_page
+              - script.execute: fetch_todos
+
+    # Sized for the 320px portrait width; in landscape it simply sits narrower
+    # and left-aligned rather than maintaining two layouts.
+    - id: todo_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        - label: {align: TOP_MID, y: 6, text_font: f_med, text_color: 0xFFFFFF, text: "Todoist"}
+        - label: {id: lbl_todo_clock, align: TOP_RIGHT, x: -10, y: 10, text_font: f_small, text_color: 0x9AA0B5, text: "--:--"}
+        - dropdown:
+            id: todo_filter_dd
+            align: TOP_MID
+            y: 32
+            width: 312
+            height: 32
+            text_font: f_small
+            options:
+              - "Today"
+              - "Overdue"
+            selected_index: 0
+            on_value:
+              then:
+                - lambda: |-
+                    id(todo_filter) = (x == 1)
+                      ? "overdue%20%26%20assigned%20to%3A%20me"
+                      : "%28today%20%7C%20overdue%29%20%26%20assigned%20to%3A%20me";
+                - script.execute: fetch_todos
+        - obj:
+            id: todo_list_container
+            align: TOP_MID
+            y: 72
+            width: 312
+            height: 188
+            bg_color: 0x11131A
+            border_width: 0
+            scrollable: true
+            scrollbar_mode: "OFF"
+            layout:
+              type: flex
+              flex_flow: column
+              pad_row: 10
+            widgets:
+              - obj:
+                  id: row_todo_1
+                  width: 308
+                  height: 44
+                  bg_color: 0x11131A
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout:
+                    type: flex
+                    flex_flow: row
+                    pad_column: 6
+                  widgets:
+                    - checkbox:
+                        id: chk_todo_1
+                        text: ""
+                        on_value:
+                          then:
+                            - if:
+                                condition:
+                                  lambda: 'return x;'
+                                then:
+                                  - script.execute:
+                                      id: complete_todo
+                                      task_id: !lambda 'return id(todo_id_1);'
+                    - label: {id: lbl_todo_1, width: 226, long_mode: WRAP, text_font: f_med, text_color: 0xFFFFFF, recolor: true, text: ""}
+                    - button: {id: btn_now_1, width: 44, height: 30, radius: 6, bg_color: 0x2C3345, widgets: [{label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "NOW"}}], on_click: [{script.execute: {id: reschedule_todo_now, task_id: !lambda 'return id(todo_id_1);'}}]}
+              - obj:
+                  id: row_todo_2
+                  width: 308
+                  height: 44
+                  bg_color: 0x11131A
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout:
+                    type: flex
+                    flex_flow: row
+                    pad_column: 6
+                  widgets:
+                    - checkbox:
+                        id: chk_todo_2
+                        text: ""
+                        on_value:
+                          then:
+                            - if:
+                                condition:
+                                  lambda: 'return x;'
+                                then:
+                                  - script.execute:
+                                      id: complete_todo
+                                      task_id: !lambda 'return id(todo_id_2);'
+                    - label: {id: lbl_todo_2, width: 226, long_mode: WRAP, text_font: f_med, text_color: 0xFFFFFF, recolor: true, text: ""}
+                    - button: {id: btn_now_2, width: 44, height: 30, radius: 6, bg_color: 0x2C3345, widgets: [{label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "NOW"}}], on_click: [{script.execute: {id: reschedule_todo_now, task_id: !lambda 'return id(todo_id_2);'}}]}
+              - obj:
+                  id: row_todo_3
+                  width: 308
+                  height: 44
+                  bg_color: 0x11131A
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout:
+                    type: flex
+                    flex_flow: row
+                    pad_column: 6
+                  widgets:
+                    - checkbox:
+                        id: chk_todo_3
+                        text: ""
+                        on_value:
+                          then:
+                            - if:
+                                condition:
+                                  lambda: 'return x;'
+                                then:
+                                  - script.execute:
+                                      id: complete_todo
+                                      task_id: !lambda 'return id(todo_id_3);'
+                    - label: {id: lbl_todo_3, width: 226, long_mode: WRAP, text_font: f_med, text_color: 0xFFFFFF, recolor: true, text: ""}
+                    - button: {id: btn_now_3, width: 44, height: 30, radius: 6, bg_color: 0x2C3345, widgets: [{label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "NOW"}}], on_click: [{script.execute: {id: reschedule_todo_now, task_id: !lambda 'return id(todo_id_3);'}}]}
+              - obj:
+                  id: row_todo_4
+                  width: 308
+                  height: 44
+                  bg_color: 0x11131A
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout:
+                    type: flex
+                    flex_flow: row
+                    pad_column: 6
+                  widgets:
+                    - checkbox:
+                        id: chk_todo_4
+                        text: ""
+                        on_value:
+                          then:
+                            - if:
+                                condition:
+                                  lambda: 'return x;'
+                                then:
+                                  - script.execute:
+                                      id: complete_todo
+                                      task_id: !lambda 'return id(todo_id_4);'
+                    - label: {id: lbl_todo_4, width: 226, long_mode: WRAP, text_font: f_med, text_color: 0xFFFFFF, recolor: true, text: ""}
+                    - button: {id: btn_now_4, width: 44, height: 30, radius: 6, bg_color: 0x2C3345, widgets: [{label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "NOW"}}], on_click: [{script.execute: {id: reschedule_todo_now, task_id: !lambda 'return id(todo_id_4);'}}]}
+              - obj:
+                  id: row_todo_5
+                  width: 308
+                  height: 44
+                  bg_color: 0x11131A
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout:
+                    type: flex
+                    flex_flow: row
+                    pad_column: 6
+                  widgets:
+                    - checkbox:
+                        id: chk_todo_5
+                        text: ""
+                        on_value:
+                          then:
+                            - if:
+                                condition:
+                                  lambda: 'return x;'
+                                then:
+                                  - script.execute:
+                                      id: complete_todo
+                                      task_id: !lambda 'return id(todo_id_5);'
+                    - label: {id: lbl_todo_5, width: 226, long_mode: WRAP, text_font: f_med, text_color: 0xFFFFFF, recolor: true, text: ""}
+                    - button: {id: btn_now_5, width: 44, height: 30, radius: 6, bg_color: 0x2C3345, widgets: [{label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "NOW"}}], on_click: [{script.execute: {id: reschedule_todo_now, task_id: !lambda 'return id(todo_id_5);'}}]}
+              - obj:
+                  id: row_todo_6
+                  width: 308
+                  height: 44
+                  bg_color: 0x11131A
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout:
+                    type: flex
+                    flex_flow: row
+                    pad_column: 6
+                  widgets:
+                    - checkbox:
+                        id: chk_todo_6
+                        text: ""
+                        on_value:
+                          then:
+                            - if:
+                                condition:
+                                  lambda: 'return x;'
+                                then:
+                                  - script.execute:
+                                      id: complete_todo
+                                      task_id: !lambda 'return id(todo_id_6);'
+                    - label: {id: lbl_todo_6, width: 226, long_mode: WRAP, text_font: f_med, text_color: 0xFFFFFF, recolor: true, text: ""}
+                    - button: {id: btn_now_6, width: 44, height: 30, radius: 6, bg_color: 0x2C3345, widgets: [{label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "NOW"}}], on_click: [{script.execute: {id: reschedule_todo_now, task_id: !lambda 'return id(todo_id_6);'}}]}
+        - button:
+            align: BOTTOM_LEFT
+            x: 10
+            y: -10
+            width: 140
+            height: 50
+            bg_color: 0x2C3345
+            radius: 10
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "REFRESH"}
+            on_click:
+              - script.execute: fetch_todos
+        - button:
+            align: BOTTOM_RIGHT
+            x: -10
+            y: -10
+            width: 140
+            height: 50
+            bg_color: 0x4B5563
+            radius: 10
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "BACK"}
+            on_click:
+              - script.execute: goto_home
