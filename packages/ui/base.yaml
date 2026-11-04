@@ -111,6 +111,14 @@ interval:
             snprintf(b, sizeof(b), "%s %04d-%02d-%02d", days[t.day_of_week], t.year, t.month, t.day_of_month);
             return std::string(b);
       - lvgl.label.update:
+          id: lbl_sb_wifi
+          text: !lambda |-
+            float r = id(wifi_rssi).state;
+            if (!id(wifi_rssi).has_state() || std::isnan(r) || r == 0) return std::string("WiFi --");
+            char b[24];
+            snprintf(b, sizeof(b), "WiFi %.0f dBm", r);
+            return std::string(b);
+      - lvgl.label.update:
           id: lbl_cpu
           text: !lambda |-
             char b[24];
@@ -285,6 +293,16 @@ lvgl:
                   text_font: f_med
                   text_color: 0x9AA0B5
                   text: ""
+              # Status bar (top left): Wi-Fi signal. The "NO WIFI" marker in the
+              # top-right corner is on the top layer and shows on every page.
+              - label:
+                  id: lbl_sb_wifi
+                  align: TOP_LEFT
+                  x: 2
+                  y: 0
+                  text_font: f_small
+                  text_color: 0x9AA0B5
+                  text: "WiFi --"
               - label:
                   id: lbl_home_status
                   align: TOP_MID

@@ -69,7 +69,7 @@ either `phone` (portrait, rotation 0) or `dashboard` (landscape 480x320,
 `lvgl.display.set_rotation: 270`). In dashboard mode the panel returns to the
 home screen after 20 seconds without touch. Swipe down on the home screen in
 dashboard mode to switch to portrait; in portrait it opens the quick settings
-drawer.
+drawer. The home header also shows the Wi-Fi signal.
 
 ## Known constraints
 
