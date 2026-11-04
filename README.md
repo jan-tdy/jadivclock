@@ -5,23 +5,24 @@ built for the Elecrow CrowPanel Advance 3.5" (ESP32-S3, ILI9488 SPI display,
 GT911 touch). You compose it from small packages and configure it with
 substitutions - there is no code to edit.
 
-> **Status: pre-release.** The packages validate with `esphome config` and
+> **Status: v2.** The packages validate with `esphome config` and
 > compile with ESPHome 2026.9.1. Not every feature has been verified on a
 > fresh install yet - see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 > please open an issue if something misbehaves.
 
 ## Features (each one an optional package)
 
-- Home screen with clock, date and a greeting; landscape or portrait, with
-  auto-return to the home screen
+- Home screen with clock, date, greeting and Wi-Fi signal; landscape or portrait
+  ("phone" mode), with auto-return to the home screen
 - **Weather** - Open-Meteo, no API key: current, next 12 hours, 6 days
 - **Todoist agenda** - complete and reschedule tasks, optionally with the next Home
   Assistant calendar event
 - **Lights** - Home Assistant lights with brightness and colour temperature
 - **Thermometers** - temperature, humidity and trend arrows
 - **Vacuum** - robot vacuum status, pause/resume, dock
-- **Broadcast** - receive popups from Home Assistant; send messages and
-  questions (with an answer) to another panel
+- **Broadcast** - receive popups from Home Assistant, with a message history
+  and an unread counter; send messages and questions (with an answer) to
+  another panel
 - Buzzer, backlight control, on-device settings
 
 ## Quick start

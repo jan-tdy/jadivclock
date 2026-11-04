@@ -6,11 +6,26 @@
 #   target: {entity_id: text.<your_panel>_broadcast}
 #   data:   {value: "Dinner is ready"}
 #
+# Every message is also kept in a history (newest first, last 30, in RAM only):
+# the MESSAGES tile on the home screen turns amber and shows the number of
+# unread messages; tapping it opens the history and marks everything read.
+# features/broadcast_send.yaml adds the answers to questions to the same list.
+#
 # Messages up to 12 characters are shown in a larger font. Only glyphs in the
 # font lists render (full ASCII by default; add more with font_extra_glyphs in
 # ui/base.yaml).
 #
 # Requires: core.yaml, ui/base.yaml, a hw/ package (for `beep`)
+globals:
+  # Unread messages (shown on the home tile) and the history behind it: one
+  # entry per line, "HH:MM  text", newest first. RAM only: a reboot clears it.
+  - id: notif_unread
+    type: int
+    initial_value: '0'
+  - id: notif_history
+    type: std::string
+    initial_value: '""'
+
 text:
   - platform: template
     id: broadcast_text
@@ -28,8 +43,71 @@ text:
         - lvgl.widget.show: broadcast_dialog
         - script.execute: hide_broadcast_delayed
         - script.execute: {id: beep, count: 2}
+        - script.execute: {id: notif_add, msg: !lambda 'return x;'}
 
 script:
+  # Appends one entry to the history (newest first), bumps the unread counter
+  # and repaints the tile. Called for every incoming message and answer.
+  - id: notif_add
+    parameters:
+      msg: std::string
+    then:
+      - lambda: |-
+          // One physical line per entry: the history is a single WRAP label,
+          // so a raw newline would split an entry into two rows.
+          std::string line = msg;
+          for (size_t i = 0; i < line.size(); i++)
+            if (line[i] == '\n' || line[i] == '\r') line[i] = ' ';
+          // Answers can be arbitrarily long; keep one entry readable.
+          if (line.size() > 140) line = line.substr(0, 137) + "...";
+          auto t = id(sntp_time).now();
+          char ts[8];
+          if (t.is_valid()) snprintf(ts, sizeof(ts), "%02d:%02d", t.hour, t.minute);
+          else snprintf(ts, sizeof(ts), "--:--");  // before the first SNTP sync
+          std::string entry = std::string(ts) + "  " + line;
+          id(notif_history) = entry + (id(notif_history).empty() ? "" : "\n" + id(notif_history));
+          // Keep the newest 30 entries; the overflow is always at the end.
+          int nl = 0;
+          for (char c : id(notif_history)) if (c == '\n') nl++;
+          while (nl > 29) {
+            size_t p = id(notif_history).rfind('\n');
+            if (p == std::string::npos) break;
+            id(notif_history).erase(p);
+            nl--;
+          }
+          id(notif_unread)++;
+      - script.execute: notif_refresh
+
+  - id: notif_refresh
+    then:
+      - lvgl.widget.update:
+          id: btn_notif
+          bg_color: !lambda 'return id(notif_unread) > 0 ? lv_color_hex(0xF59E0B) : lv_color_hex(0x2C3345);'
+      - lvgl.label.update:
+          id: lbl_notif
+          text: !lambda |-
+            if (id(notif_unread) == 0) return std::string("MESSAGES");
+            char b[24];
+            snprintf(b, sizeof(b), "MESSAGES (%d)", id(notif_unread));
+            return std::string(b);
+
+  - id: notif_clear
+    then:
+      - globals.set: {id: notif_unread, value: '0'}
+      - script.execute: notif_refresh
+
+  # The label is filled here rather than on a page-show event, so it is fresh
+  # at the moment the page becomes visible. Opening the page marks all read.
+  - id: notif_history_open
+    then:
+      - lvgl.label.update:
+          id: lbl_notif_history
+          text: !lambda |-
+            if (id(notif_history).empty()) return std::string("No messages");
+            return id(notif_history);
+      - lvgl.page.show: notif_history_page
+      - script.execute: notif_clear
+
   # mode: restart, so a new message while one is showing resets the timer
   # instead of stacking a second hide behind it.
   - id: hide_broadcast_delayed
@@ -40,6 +118,93 @@ script:
       - lvgl.widget.hide: broadcast_scrim
 
 lvgl:
+  pages:
+    - id: !extend home_page
+      widgets:
+        - button:
+            id: btn_notif
+            width: 148
+            height: 48
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {id: lbl_notif, align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "MESSAGES"}
+            on_click:
+              - script.execute: notif_history_open
+
+    # Message history, newest first: one "HH:MM  text" line per entry in a single
+    # scrollable label (no per-row widgets, so nothing needs per-message ids).
+    # A column that fills the screen, so the list takes whatever height the
+    # orientation leaves between the title and the buttons.
+    - id: notif_history_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      pad_all: 6
+      layout:
+        type: flex
+        flex_flow: COLUMN
+        pad_row: 6
+      widgets:
+        - label:
+            width: 100%
+            text_align: CENTER
+            text_font: f_med
+            text_color: 0xFFFFFF
+            text: "Messages"
+        - obj:
+            id: notif_hist_scroll
+            width: 100%
+            flex_grow: 1
+            bg_color: 0x11131A
+            border_width: 0
+            scrollable: true
+            scrollbar_mode: "AUTO"
+            widgets:
+              # No recolor: these are raw user strings, and a stray '#' would
+              # otherwise start markup parsing and eat the rest of the line.
+              - label:
+                  id: lbl_notif_history
+                  width: 100%
+                  long_mode: WRAP
+                  text_font: f_small
+                  text_color: 0xFFFFFF
+                  recolor: false
+                  text: ""
+        - obj:
+            width: 100%
+            height: 50
+            bg_color: 0x11131A
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            layout:
+              type: flex
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+              flex_align_cross: CENTER
+            widgets:
+              - button:
+                  width: 46%
+                  height: 50
+                  bg_color: 0x4B5563
+                  radius: 10
+                  widgets:
+                    - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "CLEAR"}
+                  on_click:
+                    - globals.set: {id: notif_history, value: '""'}
+                    - script.execute: notif_clear
+                    - lvgl.label.update: {id: lbl_notif_history, text: "No messages"}
+              - button:
+                  width: 46%
+                  height: 50
+                  bg_color: 0x2C3345
+                  radius: 10
+                  widgets:
+                    - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "BACK"}
+                  on_click:
+                    - script.execute: goto_home
+
   top_layer:
     widgets:
       # Full-screen backdrop behind the dialog; tapping outside closes both.
@@ -60,6 +225,7 @@ lvgl:
           on_click:
             - lvgl.widget.hide: broadcast_scrim
             - lvgl.widget.hide: broadcast_dialog
+            - script.execute: notif_clear
       - obj:
           id: broadcast_dialog
           hidden: true
@@ -84,3 +250,4 @@ lvgl:
           on_click:
             - lvgl.widget.hide: broadcast_dialog
             - lvgl.widget.hide: broadcast_scrim
+            - script.execute: notif_clear

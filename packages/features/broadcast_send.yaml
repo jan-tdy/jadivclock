@@ -23,7 +23,8 @@
 #
 # The on-screen keyboard is ASCII only.
 #
-# Requires: core.yaml, ui/base.yaml, a hw/ package (for `beep`)
+# Requires: core.yaml, ui/base.yaml, features/broadcast.yaml (the answer is
+# added to its message history) and a hw/ package (for `beep`)
 substitutions:
   bc_target_name: "Remote panel"
   bc_target_broadcast_entity: text.remote_panel_broadcast
@@ -76,6 +77,7 @@ text_sensor:
                     - lvgl.widget.show: bc_answer_scrim
                     - lvgl.widget.show: bc_answer_dlg
                     - script.execute: {id: beep, count: 2}
+                    - script.execute: {id: notif_add, msg: !lambda 'return std::string("${bc_target_name}: ") + x;'}
                     - script.execute: bc_hide_answer_delayed
 
 script:
@@ -298,6 +300,7 @@ lvgl:
           on_click:
             - lvgl.widget.hide: bc_answer_scrim
             - lvgl.widget.hide: bc_answer_dlg
+            - script.execute: notif_clear
       - obj:
           id: bc_answer_dlg
           hidden: true
@@ -322,3 +325,4 @@ lvgl:
           on_click:
             - lvgl.widget.hide: bc_answer_dlg
             - lvgl.widget.hide: bc_answer_scrim
+            - script.execute: notif_clear
