@@ -1,0 +1,386 @@
+# JadivClock base UI for 320x240 landscape panels (CrowPanel 2.4"): fonts, boot
+# screen, home screen, settings, Wi-Fi indicator and the shared loading dialog.
+#
+# Same contract as ui/base.yaml (home_page, settings_page, goto_home,
+# update_home_status, hide_loading_delayed, refresh_ha_display, loading_dialog,
+# lbl_no_wifi, home_outdoor_temp), but a fixed 320x240 landscape layout: no
+# portrait/"phone" mode and no swipe gestures.
+#
+# Home-screen tiles are 148px wide, so two fit per row and the home page holds
+# up to 4 tiles (settings + 3) without scrolling. The feature packages' own
+# pages are laid out for 480x320 / 320x480 and are NOT adapted to 320x240 yet.
+#
+# Requires: core.yaml and hw/crowpanel_24.yaml.
+substitutions:
+  # Roboto glyph lists REPLACE the default set, so this must contain full ASCII.
+  # Add accented characters with font_extra_glyphs, e.g. "áäčďéíľňóôšťúýž".
+  font_extra_glyphs: ""
+  font_glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°·${font_extra_glyphs}"
+
+esphome:
+  on_boot:
+    - script.execute: update_home_status
+    # Fallback off the boot screen if Wi-Fi never connects; wifi.on_connect
+    # normally gets there sooner.
+    - delay: 10s
+    - if:
+        condition:
+          lvgl.page.is_showing: boot_page
+        then:
+          - script.execute: goto_home
+
+wifi:
+  on_connect:
+    then:
+      - lvgl.widget.hide: lbl_no_wifi
+      # Only leave the boot screen: a Wi-Fi reconnect must not pull the user
+      # away from the page they are on.
+      - if:
+          condition:
+            lvgl.page.is_showing: boot_page
+          then:
+            - script.execute: goto_home
+  on_disconnect:
+    then:
+      - lvgl.widget.show: lbl_no_wifi
+
+globals:
+  # Outdoor temperature for the greeting line; a thermometer feature may set it.
+  # -999 is an "unknown" sentinel.
+  - id: home_outdoor_temp
+    type: float
+    initial_value: '-999.0f'
+
+font:
+  - file: "gfonts://Roboto"
+    id: f_big
+    size: 48
+    glyphs: "0123456789:-"
+  - file: "gfonts://Roboto"
+    id: f_med
+    size: 18
+    glyphs: ${font_glyphs}
+  - file: "gfonts://Roboto"
+    id: f_small
+    size: 13
+    glyphs: ${font_glyphs}
+  - file: "gfonts://Roboto"
+    id: f_status
+    size: 22
+    glyphs: ${font_glyphs}
+  # Incoming-message popup scales short texts up for readability.
+  - file: "gfonts://Roboto"
+    id: f_broadcast_big
+    size: 32
+    glyphs: ${font_glyphs}
+
+interval:
+  - interval: 1s
+    then:
+      - lvgl.label.update:
+          id: lbl_home_time
+          text: !lambda |-
+            auto t = id(sntp_time).now();
+            if (!t.is_valid()) return std::string("--:--");
+            char b[6];
+            snprintf(b, sizeof(b), "%02d:%02d", t.hour, t.minute);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_home_date
+          text: !lambda |-
+            auto t = id(sntp_time).now();
+            if (!t.is_valid()) return std::string("");
+            const char* days[] = {"", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+            char b[40];
+            snprintf(b, sizeof(b), "%s %04d-%02d-%02d", days[t.day_of_week], t.year, t.month, t.day_of_month);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_sb_wifi
+          text: !lambda |-
+            float r = id(wifi_rssi).state;
+            if (!id(wifi_rssi).has_state() || std::isnan(r) || r == 0) return std::string("WiFi --");
+            char b[24];
+            snprintf(b, sizeof(b), "WiFi %.0f dBm", r);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_cpu
+          text: !lambda |-
+            char b[24];
+            snprintf(b, sizeof(b), "CPU: %.1f C", id(esp_temp).state);
+            return std::string(b);
+      - lvgl.label.update:
+          id: lbl_wifi
+          text: !lambda |-
+            char b[48];
+            snprintf(b, sizeof(b), "WiFi: %.0f dBm  %s", id(wifi_rssi).state, id(wifi_ip).state.c_str());
+            return std::string(b);
+
+  # Auto-return to the home screen after 20s without touch.
+  # lv_display_get_inactive_time resets only on real touch events, so the 1s
+  # clock redraw above cannot keep this from firing.
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            and:
+              # Without this the condition stays true and the home page would
+              # be redrawn every 5s.
+              - not:
+                  lvgl.page.is_showing: home_page
+              - lambda: |-
+                  return lv_display_get_inactive_time(lv_display_get_default()) >= 20000;
+          then:
+            - script.execute: goto_home
+
+script:
+  # Greeting line on the home screen: "Hello <user_name> · 12°C outside".
+  - id: update_home_status
+    mode: restart
+    then:
+      - lvgl.label.update:
+          id: lbl_home_status
+          text: !lambda |-
+            std::string s = "Hello";
+            std::string user = "${user_name}";
+            if (!user.empty()) s += " " + user;
+            if (id(home_outdoor_temp) > -900.0f) {
+              char b[24];
+              snprintf(b, sizeof(b), " · %.0f°C outside", id(home_outdoor_temp));
+              s += b;
+            }
+            return s;
+
+  # The one place that decides which page is "home".
+  - id: goto_home
+    then:
+      - lvgl.page.show: home_page
+
+  # Safety net: the normal path hides loading_dialog as soon as a request
+  # finishes; this covers a request that never reaches on_response/on_error.
+  - id: hide_loading_delayed
+    mode: restart
+    then:
+      - delay: 12s
+      - lvgl.widget.hide: loading_dialog
+
+  # "Refresh" button on the settings page. Feature packages extend this script
+  # (`- id: !extend refresh_ha_display`) to repaint their widgets from the
+  # values ESPHome already has cached from Home Assistant.
+  - id: refresh_ha_display
+    then:
+      - logger.log: "Refreshing widgets"
+
+lvgl:
+  pages:
+    # Shown at power-on while Wi-Fi connects. The colour strip doubles as a
+    # display colour-order self-test: it must read red, green, blue, yellow,
+    # cyan, magenta (see docs/hardware-crowpanel-24.md if it does not).
+    - id: boot_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        - label:
+            align: TOP_MID
+            y: 12
+            text_font: f_med
+            text_color: 0xFFFFFF
+            text: "JadivClock"
+        - obj:
+            align: TOP_MID
+            y: 50
+            width: 300
+            height: 40
+            bg_color: 0x11131A
+            border_width: 0
+            scrollable: false
+            widgets:
+              - obj: {align: TOP_LEFT, x: 0, y: 0, width: 44, height: 40, bg_color: 0xFF0000, radius: 4}
+              - obj: {align: TOP_LEFT, x: 52, y: 0, width: 44, height: 40, bg_color: 0x00FF00, radius: 4}
+              - obj: {align: TOP_LEFT, x: 104, y: 0, width: 44, height: 40, bg_color: 0x0000FF, radius: 4}
+              - obj: {align: TOP_LEFT, x: 156, y: 0, width: 44, height: 40, bg_color: 0xFFFF00, radius: 4}
+              - obj: {align: TOP_LEFT, x: 208, y: 0, width: 44, height: 40, bg_color: 0x00FFFF, radius: 4}
+              - obj: {align: TOP_LEFT, x: 256, y: 0, width: 44, height: 40, bg_color: 0xFF00FF, radius: 4}
+        - label:
+            align: BOTTOM_MID
+            y: -12
+            text_font: f_small
+            text_color: 0x9AA0B5
+            text: "Connecting to Wi-Fi..."
+
+    # Home screen. A wrapping flex container: the header takes a full row and
+    # every feature package appends its tile after it (148px wide: two per row).
+    - id: home_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      pad_all: 6
+      layout:
+        type: flex
+        flex_flow: ROW_WRAP
+        pad_row: 8
+        pad_column: 8
+      widgets:
+        - obj:
+            width: 100%
+            height: 100
+            bg_color: 0x11131A
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            widgets:
+              - label:
+                  id: lbl_home_time
+                  align: TOP_MID
+                  y: 8
+                  text_font: f_big
+                  text_color: 0xFFFFFF
+                  text: "--:--"
+              - label:
+                  id: lbl_home_date
+                  align: TOP_MID
+                  y: 62
+                  text_font: f_med
+                  text_color: 0x9AA0B5
+                  text: ""
+              # Status bar (top left): Wi-Fi signal. The "NO WIFI" marker in the
+              # top-right corner is on the top layer and shows on every page.
+              - label:
+                  id: lbl_sb_wifi
+                  align: TOP_LEFT
+                  x: 2
+                  y: 0
+                  text_font: f_small
+                  text_color: 0x9AA0B5
+                  text: "WiFi --"
+              - label:
+                  id: lbl_home_status
+                  align: TOP_MID
+                  y: 84
+                  width: 100%
+                  long_mode: DOT
+                  text_align: CENTER
+                  text_font: f_small
+                  text_color: 0x7DD3FC
+                  text: ""
+        - button:
+            width: 148
+            height: 48
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "SETTINGS"}
+            on_click:
+              - lvgl.page.show: settings_page
+
+    # Local settings only (backlight, diagnostics, sound).
+    - id: settings_page
+      bg_color: 0x11131A
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        - label: {align: TOP_MID, y: 4, text_font: f_med, text_color: 0xFFFFFF, text: "Settings"}
+        - label: {align: TOP_LEFT, x: 20, y: 30, text_font: f_small, text_color: 0x9AA0B5, text: "Backlight"}
+        - slider:
+            id: brightness_slider
+            align: TOP_MID
+            y: 50
+            width: 90%
+            height: 18
+            min_value: 10
+            max_value: 100
+            value: 100
+            on_value:
+              then:
+                - light.turn_on:
+                    id: backlight
+                    brightness: !lambda 'return x / 100.0f;'
+        - label: {id: lbl_cpu, align: TOP_LEFT, x: 20, y: 80, text_font: f_small, text_color: 0x7DD3FC, text: "CPU: -- C"}
+        - label: {id: lbl_wifi, align: TOP_LEFT, x: 20, y: 98, text_font: f_small, text_color: 0x9AA0B5, text: "WiFi: --"}
+        - label: {align: TOP_LEFT, x: 20, y: 124, text_font: f_small, text_color: 0xFFFFFF, text: "Buzzer sound"}
+        - switch:
+            id: buzzer_sound_switch
+            align: TOP_RIGHT
+            x: -20
+            y: 120
+            state:
+              checked: true
+            on_value:
+              then:
+                - lambda: 'id(buzzer_muted) = !x;'
+        - button:
+            align: TOP_LEFT
+            x: 20
+            y: 152
+            width: 45%
+            height: 34
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "Test sound"}
+            on_click:
+              # Bypasses buzzer_muted on purpose: a test button should be heard.
+              - repeat:
+                  count: 3
+                  then:
+                    - output.set_level:
+                        id: buzzer_pwm
+                        level: 50%
+                    - delay: 100ms
+                    - output.turn_off: buzzer_pwm
+                    - delay: 100ms
+        - button:
+            align: TOP_RIGHT
+            x: -20
+            y: 152
+            width: 45%
+            height: 34
+            bg_color: 0x2C3345
+            radius: 8
+            widgets:
+              - label: {align: CENTER, text_font: f_small, text_color: 0xFFFFFF, text: "Refresh HA"}
+            on_click:
+              - script.execute: refresh_ha_display
+        - button:
+            align: BOTTOM_MID
+            y: -10
+            width: 90%
+            height: 40
+            bg_color: 0x4B5563
+            radius: 10
+            widgets:
+              - label: {align: CENTER, text_font: f_med, text_color: 0xFFFFFF, text: "BACK"}
+            on_click:
+              - script.execute: goto_home
+
+  top_layer:
+    widgets:
+      # Starts visible: on_disconnect only fires on a connected->disconnected
+      # transition, not for "never connected yet".
+      - label:
+          id: lbl_no_wifi
+          align: TOP_RIGHT
+          x: -6
+          y: 6
+          text_font: f_small
+          text_color: 0xDC2626
+          text: "NO WIFI"
+      # "Please wait" indicator for the network-bound scripts. Has no dismiss
+      # handler on purpose: it reflects a request that is really in progress.
+      - obj:
+          id: loading_dialog
+          hidden: true
+          align: CENTER
+          width: 180
+          height: 70
+          bg_color: 0x1F2430
+          radius: 12
+          border_color: 0x3B4252
+          border_width: 2
+          scrollable: false
+          widgets:
+            - label:
+                align: CENTER
+                text_font: f_med
+                text_color: 0xFFFFFF
+                text: "Please wait..."

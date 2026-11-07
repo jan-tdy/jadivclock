@@ -1,0 +1,10 @@
+# Example: CrowPanel 2.4" - just the clock.
+substitutions:
+  name: my-clock-24
+  friendly_name: My JadivClock 2.4
+  timezone: Europe/Berlin
+
+packages:
+  core: github://jan-tdy/jadivclock/packages/core.yaml@main
+  hw: github://jan-tdy/jadivclock/packages/hw/crowpanel_24.yaml@main
+  ui: github://jan-tdy/jadivclock/packages/ui/base_24.yaml@main

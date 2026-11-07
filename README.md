@@ -2,7 +2,8 @@
 
 A touch-screen smart-home panel firmware for [ESPHome](https://esphome.io),
 built for the Elecrow CrowPanel Advance 3.5" (ESP32-S3, ILI9488 SPI display,
-GT911 touch). You compose it from small packages and configure it with
+GT911 touch). A reduced clock-only build for the CrowPanel 2.4" (ESP32,
+ILI9341, resistive touch) is also included. You compose it from small packages and configure it with
 substitutions - there is no code to edit.
 
 > **Status: v2.** The packages validate with `esphome config` and
@@ -52,6 +53,7 @@ Add the other features the same way. Full walk-through:
 - [Getting started](docs/getting-started.md)
 - [Architecture and design](docs/ARCHITECTURE.md)
 - [Hardware: CrowPanel Advance 3.5"](docs/hardware-crowpanel-35.md)
+- [Hardware: CrowPanel 2.4" (clock only)](docs/hardware-crowpanel-24.md)
 - Features: [weather](docs/features/weather.md),
   [todoist](docs/features/todoist.md), [lights](docs/features/lights.md),
   [thermometers](docs/features/thermometers.md),

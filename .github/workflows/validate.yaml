@@ -30,3 +30,4 @@ jobs:
         run: |
           esphome config tests/minimal.yaml
           esphome config tests/full.yaml
+          esphome config tests/minimal_24.yaml

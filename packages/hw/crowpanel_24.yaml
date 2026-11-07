@@ -1,0 +1,153 @@
+# Elecrow CrowPanel 2.4" ESP32 display (Basic series, NOT the "Advance" 3.5"):
+# ESP32-WROOM-32-N4 (4 MB flash, no PSRAM), 240x320 ILI9341 over SPI,
+# resistive touch (XPT2046) on the same SPI bus, PWM backlight, no onboard RTC
+# and no buzzer.
+#
+# Pins are taken from Elecrow's own V2.1 ESPHome example for this board
+# (github.com/Elecrow-RD/CrowPanel-2.4-ESP32-HMI-320x240). Do not mix them with
+# crowpanel_35.yaml: the two boards share nothing.
+#
+# The panel is natively portrait (240x320). This package makes it landscape
+# 320x240 in hardware (MADCTL via `transform:`) and tells ESPHome the resulting
+# size, instead of using LVGL's software rotation: the touchscreen scales touch
+# coordinates with the display's unrotated size, so software rotation leaves
+# the right quarter of the screen unreachable (esphome/esphome#6352).
+#
+# Pair it with ui/base_24.yaml (the 480x320 ui/base.yaml does not fit).
+#
+# Contract for hardware packages (what the UI relies on):
+#   ids:   my_display, my_touch, backlight (light), buzzer_pwm (output),
+#          script `beep`, global `buzzer_muted`
+#
+# Substitutions:
+#   buzzer_pin       GPIO of an external buzzer module (default GPIO25)
+#   buzzer_frequency drive frequency for a passive piezo (default 2700 Hz)
+substitutions:
+  buzzer_pin: GPIO25
+  buzzer_frequency: 2700 Hz
+
+esp32:
+  board: esp32dev
+  framework:
+    # Arduino rather than ESP-IDF: this is the framework Elecrow's example is
+    # known to work with on this board.
+    type: arduino
+
+# No psram: block on purpose. The WROOM module has no PSRAM, and enabling it
+# fails at boot ("PSRAM chip not found"). Elecrow's example carries PSRAM build
+# flags copied from the 2.8" model; they are wrong for this board.
+
+spi:
+  id: tft_spi
+  clk_pin: GPIO14
+  mosi_pin: GPIO13
+  # MISO is needed: the XPT2046 shares this bus with the display.
+  miso_pin: GPIO12
+
+globals:
+  - id: buzzer_muted
+    type: bool
+    initial_value: 'false'
+
+output:
+  - platform: ledc
+    id: backlight_pwm
+    pin: GPIO27
+  # The board has no buzzer. GPIO26 (the vendor's speaker pin) is not exposed
+  # on the connectors, so an optional external buzzer module (KY-006 passive /
+  # KY-012 active; S to the pin, - to GND) goes on GPIO25 by default. Without
+  # one, the beeps are silent and nothing else breaks.
+  - platform: ledc
+    id: buzzer_pwm
+    pin: ${buzzer_pin}
+    # A passive piezo needs a real audible frequency. An active buzzer has its
+    # own oscillator and ignores it.
+    frequency: ${buzzer_frequency}
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: "Display Backlight"
+    output: backlight_pwm
+    restore_mode: RESTORE_DEFAULT_ON
+
+switch:
+  # Deliberately ignores buzzer_muted: an explicit action from Home Assistant
+  # should sound regardless of the on-device mute setting.
+  - platform: output
+    name: "Buzzer"
+    output: buzzer_pwm
+
+script:
+  # `count` short beeps, unless muted from the settings page.
+  - id: beep
+    parameters:
+      count: int
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(buzzer_muted);'
+          then:
+            - repeat:
+                count: !lambda 'return count;'
+                then:
+                  - output.set_level:
+                      id: buzzer_pwm
+                      level: 50%
+                  - delay: 100ms
+                  - output.turn_off: buzzer_pwm
+                  - delay: 100ms
+
+display:
+  - platform: ili9xxx
+    id: my_display
+    spi_id: tft_spi
+    model: ILI9341
+    cs_pin: GPIO15
+    dc_pin: GPIO2
+    # Elecrow's V2.1 example sets GPIO4; their generic readme says "not wired".
+    # If the display stays black, delete this line first.
+    reset_pin: GPIO4
+    # Differs from Elecrow's defaults (bgr + inverted) on the units tested:
+    # with those, the UI showed a white background and red/blue swapped. If
+    # your unit looks like that, set color_order: bgr and invert_colors: true.
+    color_order: rgb
+    invert_colors: false
+    data_rate: 10MHz
+    auto_clear_enabled: false
+    update_interval: never
+    # Landscape, connector on the left.
+    transform:
+      swap_xy: true
+      mirror_x: false
+      mirror_y: false
+    dimensions:
+      width: 320
+      height: 240
+
+touchscreen:
+  - platform: xpt2046
+    id: my_touch
+    display: my_display
+    spi_id: tft_spi
+    cs_pin: GPIO33
+    # The resistive film is wired independently of the LCD controller: raw X
+    # follows the screen row and raw Y the screen column (inverted), so the
+    # touch transform does not change when the display transform does.
+    transform:
+      swap_xy: true
+      mirror_x: true
+      mirror_y: false
+    calibration:
+      x_min: 300
+      x_max: 3900
+      y_min: 300
+      y_max: 3900
+
+lvgl:
+  # No rotation: here - the display already reports its final 320x240 size.
+  buffer_size: 25%
+  displays:
+    - my_display
+  touchscreens:
+    - my_touch

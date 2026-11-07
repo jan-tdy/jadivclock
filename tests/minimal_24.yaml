@@ -1,0 +1,10 @@
+# CI/regression copy of examples/minimal_24.yaml using local packages.
+substitutions:
+  name: my-clock-24
+  friendly_name: My JadivClock 2.4
+  timezone: Europe/Berlin
+
+packages:
+  core: !include ../packages/core.yaml
+  hw: !include ../packages/hw/crowpanel_24.yaml
+  ui: !include ../packages/ui/base_24.yaml

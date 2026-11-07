@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **CrowPanel 2.4"** (ESP32, ILI9341, XPT2046): new `hw/crowpanel_24.yaml` and
+  `ui/base_24.yaml` (320x240 landscape clock, settings, Wi-Fi status). Feature
+  packages are not adapted to this panel yet. See
+  [docs/hardware-crowpanel-24.md](docs/hardware-crowpanel-24.md).
+
 ## v2.0.0
 
 - **Message history** in `features/broadcast.yaml`: incoming messages and answers

@@ -10,8 +10,10 @@ packages/
   core.yaml                 identity, wifi, api, ota, sntp, http_request, diagnostics
   hw/
     crowpanel_35.yaml       ESP32-S3, ILI9488, GT911, RTC, backlight, buzzer, LVGL display
+    crowpanel_24.yaml       ESP32, ILI9341 320x240, XPT2046 resistive touch, backlight
   ui/
     base.yaml               fonts, boot screen, home screen, settings, loading dialog
+    base_24.yaml            same contract for 320x240 landscape (2.4"); features not adapted
   features/
     weather.yaml            Open-Meteo page
     todoist.yaml            agenda page
@@ -93,4 +95,5 @@ ESPHome 2026.9.1 (LVGL 9.5, `lvgl.display.set_rotation`). CI validates
 
 ## Roadmap
 
-* `hw/crowpanel_24.yaml` and `hw/crowpanel_43.yaml` (2.4" / 4.3" panels)
+* Adapt the feature packages to the 2.4" panel (320x240)
+* `hw/crowpanel_43.yaml` (4.3" panel)
